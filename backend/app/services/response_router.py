@@ -25,11 +25,19 @@ def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
         excerpt_len = 120 if mobile else 180
         for ev in answer.evidence[:limit]:
             author = ev.author or "a group member"
-            # Never display the group title as the author
-            if author == "UNIPOD TASK GROUP":
-                author = "a team member"
-            if ev.meeting_offset_display:
-                lines.append(f"• Said in meeting by {author} @ {ev.meeting_offset_display}:")
+            # Clean display for document/meeting sources
+            if author.startswith("meeting:"):
+                author = author.replace("meeting:", "").strip()
+            if author in {"UNIPOD TASK GROUP", "UNIPODS COHORT 1"}:
+                author = "a cohort member"
+
+            # Check if this evidence comes from official docs/guidelines
+            is_doc = any(k in author.lower() for k in ("guideline", "information pack", "track", "about", "hackathon", "knowledge"))
+            if is_doc:
+                clean_title = author.split(" - ")[0].strip() if " - " in author else author[:40]
+                lines.append(f"• From official documentation ({clean_title}):")
+            elif ev.meeting_offset_display:
+                lines.append(f"• Said in session by {author} @ {ev.meeting_offset_display}:")
             else:
                 lines.append(f"• Said by {author}:")
             if ev.excerpt:
@@ -118,11 +126,24 @@ async def handle_user_message(
     # ────────────────────────────────────────────────────────────────────────
 
     # Direct action request handler (e.g. "tag joel asking him how he is doing so far", "tag owen to create google meet")
+    # Only fires for known team members or broadcast words — prevents garbage like "Hey @me, ..."
+    KNOWN_ACTION_TARGETS = {
+        "owen", "shema", "joel", "joe", "deborah", "kgosi", "reitumetse",
+        "everyone", "all", "team", "everybody",
+    }
     action_match = re.search(
         r"(?:can you |could you |please )?(?:tag|tell|ask|remind|notify|ping)\s+([A-Za-z0-9_@+]+)\s*(?:to|and (?:ask|tell) (?:him|her|them) to|asking (?:him|her|them)|telling (?:him|her|them)|that)?\s*(.*)",
         text_clean,
         flags=re.I,
     )
+    if action_match:
+        raw_target = action_match.group(1).strip().lower()
+        instruction = action_match.group(2).strip()
+        # Reject unknown targets (not a team member, not a phone number, not broadcast)
+        is_phone = re.match(r'^\+?[\d]{7,}$', raw_target)
+        if raw_target not in KNOWN_ACTION_TARGETS and not is_phone:
+            action_match = None  # Fall through to RAG
+
     if action_match:
         raw_target = action_match.group(1).strip().lower()
         instruction = action_match.group(2).strip()

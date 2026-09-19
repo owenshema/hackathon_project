@@ -163,6 +163,14 @@ async def whatsapp_webhook(
     if event and event != "message:in:new" and "entry" not in payload:
         return {"status": "ignored", "event": event}
 
+    # Guard against Wassenger retry floods from tunnel downtime.
+    # Wassenger retries failed deliveries — when the tunnel was down it queues many retries.
+    # retries > 2 means an old stale re-delivery — skip it to prevent duplicates.
+    retry_count = int(payload.get("retries", 0) or 0)
+    if retry_count > 2:
+        print(f"[WhatsApp Webhook] Skipping stale retry (retries={retry_count})")
+        return {"status": "ok", "message": "stale retry skipped"}
+
     # Schedule background processing — return 200 right away
     background_tasks.add_task(_handle_whatsapp_payload, payload)
     return {"status": "ok", "message": "queued"}

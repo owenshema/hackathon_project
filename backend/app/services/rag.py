@@ -56,28 +56,24 @@ async def retrieve(
     exclude = exclude_message_ids or set()
 
     # Load recent chunks (optionally scoped later via message join)
-    result = await db.execute(select(Chunk).order_by(Chunk.created_at.desc()).limit(300))
+    result = await db.execute(select(Chunk).order_by(Chunk.created_at.desc()).limit(1000))
     chunks = list(result.scalars().all())
 
     if exclude:
         chunks = [c for c in chunks if c.message_id not in exclude]
 
     if conversation_id:
-        # Prefer chunks from the same group/chat when metadata matches
-        scoped = []
+        # Prioritize chunks from the same group/chat while keeping documentation/knowledge accessible
+        same_conv = []
+        other_chunks = []
         for c in chunks:
             meta = c.meta or {}
-            if meta.get("conversation_id") == conversation_id:
-                scoped.append(c)
-        # Also match via related Message.conversation_id
-        if not scoped:
-            msg_rows = await db.execute(
-                select(Message.id).where(Message.conversation_id == conversation_id)
-            )
-            msg_ids = {r[0] for r in msg_rows.fetchall()}
-            scoped = [c for c in chunks if c.message_id in msg_ids]
-        if scoped:
-            chunks = scoped
+            c_conv = meta.get("conversation_id")
+            if c_conv == conversation_id or (not c.message_id):  # Meeting/doc chunks have no message_id
+                same_conv.append(c)
+            else:
+                other_chunks.append(c)
+        chunks = same_conv + other_chunks
 
     if settings.store_embeddings_as_json or not query_vec or all(v == 0.0 for v in query_vec):
         if not query_vec or all(v == 0.0 for v in query_vec):
@@ -223,7 +219,12 @@ async def answer_question(
     )
     data = await generate_json(prompt, SYSTEM_PROMPT, fast=fast)
 
-    confidence = data.get("confidence", "medium")
+    confidence_raw = data.get("confidence", "medium")
+    if isinstance(confidence_raw, (int, float)):
+        confidence = "high" if confidence_raw >= 0.7 else ("medium" if confidence_raw >= 0.4 else "insufficient")
+    else:
+        confidence = str(confidence_raw).lower()
+
     indices = data.get("evidence_indices") or []
     if not isinstance(indices, list):
         indices = []

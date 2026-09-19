@@ -92,27 +92,80 @@ async def catch_me_up(
     user_name: str | None = None,
     since: datetime | None = None,
 ) -> CatchUpResponse:
-    if since is None:
-        activity = await db.scalar(
-            select(UserActivity).where(UserActivity.user_id == user_id)
-        )
-        since = activity.last_seen_at if activity else None
+    """
+    Build a catch-up summary from recent group activity.
+    Always pulls the last 50 messages + stored decisions + action items
+    so the user always gets a meaningful summary regardless of last_seen_at.
+    """
+    from app.db.models import ActionItem as ActionItemModel, Decision as DecisionModel
 
-    q = select(Message).order_by(Message.timestamp.desc()).limit(50)
-    if since is not None:
-        q = (
-            select(Message)
-            .where(Message.timestamp >= since)
-            .order_by(Message.timestamp.asc())
-            .limit(100)
-        )
-    result = await db.execute(q)
-    messages = list(result.scalars().all())
-    texts = [
-        f"[{m.timestamp.isoformat()}] {m.author_name or m.author_id}: {m.text}"
-        for m in messages
+    # Pull recent messages (always last 50, regardless of last_seen timestamp)
+    result = await db.execute(
+        select(Message).order_by(Message.timestamp.desc()).limit(50)
+    )
+    messages = list(reversed(result.scalars().all()))  # chronological order
+
+    # Pull stored decisions (last 5)
+    dec_result = await db.execute(
+        select(DecisionModel).order_by(DecisionModel.created_at.desc()).limit(5)
+    )
+    decisions_db = list(dec_result.scalars().all())
+
+    # Pull stored action items (last 5)
+    act_result = await db.execute(
+        select(ActionItemModel).order_by(ActionItemModel.created_at.desc()).limit(5)
+    )
+    action_items_db = list(act_result.scalars().all())
+
+    # Build sections directly from DB — no LLM needed
+    important: list[str] = []
+    discussions: list[str] = []
+
+    # Scan messages for important content (announcements, deadlines, links, tasks)
+    IMPORTANT_KEYWORDS = (
+        "deadline", "submit", "submission", "important", "urgent", "meeting",
+        "join", "google meet", "link", "call", "reminder", "don't forget",
+        "unipod", "prize", "hackathon",
+    )
+    seen_texts: set[str] = set()
+    for m in messages:
+        text = (m.text or "").strip()
+        if not text or len(text) < 10:
+            continue
+        key = text[:60].lower()
+        if key in seen_texts:
+            continue
+        seen_texts.add(key)
+        author = m.author_name or m.author_id or "Someone"
+        line = f"{author}: {text[:120]}"
+        if any(kw in text.lower() for kw in IMPORTANT_KEYWORDS):
+            important.append(line)
+        else:
+            discussions.append(line)
+
+    # Cap sections
+    important = important[:5]
+    discussions = discussions[:4]
+
+    # Decisions from DB
+    decision_lines = [
+        d.decision + (f" ({d.reason})" if d.reason else "")
+        for d in decisions_db
     ]
-    response = await extract_from_texts(db, texts, evidence_messages=messages)
+
+    # Action items from DB
+    action_lines = [
+        (f"{a.assignee_name}: {a.task}" if a.assignee_name else a.task)
+        for a in action_items_db
+    ]
+
+    # If we have messages but no structured data yet, build from messages directly
+    if not decision_lines and not action_lines and not important and not discussions:
+        if messages:
+            discussions = [
+                f"{(m.author_name or m.author_id or 'Someone')}: {(m.text or '')[:100]}"
+                for m in messages[-5:]
+            ]
 
     # Update last seen
     activity = await db.scalar(
@@ -131,4 +184,14 @@ async def catch_me_up(
             )
         )
     await db.commit()
-    return response
+
+    evidence: list[EvidenceItem] = [evidence_from_message(m) for m in messages[-3:]]
+
+    return CatchUpResponse(
+        important=important,
+        decisions=decision_lines,
+        discussions=discussions,
+        action_items=action_lines,
+        evidence=evidence,
+    )
+

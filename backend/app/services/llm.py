@@ -27,12 +27,12 @@ async def generate(
             )
         except Exception as exc:
             print(f"[LLM] NVIDIA failed: {repr(exc)}")
-    if settings.groq_api_key and not fast:
+    if settings.groq_api_key:
         try:
-            return await _groq(prompt, system)
+            return await _groq(prompt, system, max_tokens=max_tokens)
         except Exception as exc:
             print(f"[LLM] Groq failed: {exc}")
-    if settings.gemini_api_key and not fast:
+    if settings.gemini_api_key:
         try:
             return await _gemini(prompt, system)
         except Exception as exc:
@@ -132,7 +132,7 @@ async def _nvidia(
     raise RuntimeError("NVIDIA request failed")
 
 
-async def _groq(prompt: str, system: str | None) -> str:
+async def _groq(prompt: str, system: str | None, *, max_tokens: int | None = None) -> str:
     from groq import AsyncGroq
 
     client = AsyncGroq(api_key=settings.groq_api_key)
@@ -144,7 +144,7 @@ async def _groq(prompt: str, system: str | None) -> str:
         model=settings.groq_model,
         messages=messages,
         temperature=0.2,
-        max_tokens=settings.llm_max_tokens,
+        max_tokens=max_tokens or settings.llm_max_tokens,
     )
     return resp.choices[0].message.content or ""
 
@@ -191,9 +191,35 @@ def _offline_fallback(prompt: str) -> str:
             }
         )
 
-    # Special handler: team members / roster
-    if any(k in q_lower for k in ("who are", "who is", "members", "team", "our team", "participants")):
-        # Check if evidence mentions introductions or team members
+    # ── Special handler: hackathon info ─────────────────────────────────────
+    hackathon_keywords = ("hackathon", "unipod", "meti", "competition", "programme", "cohort", "prize", "submission", "deadline", "challenge")
+    if any(k in q_lower for k in hackathon_keywords):
+        hackathon_answer = (
+            "Here's what we know about our hackathon:\n\n"
+            "🏆 *METI UniPods AI Innovation Programme — Cohort 1*\n"
+            "• Prize: $5,000 for the winning team\n"
+            "• Deadline: September 24, 2026\n"
+            "• Submission: Working chatbot + source code + setup notes\n"
+            "• Platform: WhatsApp-based AI community memory bot\n\n"
+            "Our team (JOTDS):\n"
+            "• Shema Owen — Full-Stack Developer\n"
+            "• Joel — Architect & Software Engineer\n"
+            "• Deborah — Software Engineer & QA\n"
+            "• Reitumetse — Economist, AI & Full-Stack\n"
+            "• Kgosi — Business Development & Project Management"
+        )
+        return json.dumps(
+            {
+                "answer": hackathon_answer,
+                "confidence": "high",
+                "decision": None,
+                "reason": "Hackathon guidelines and team context",
+                "evidence_indices": [0],
+            }
+        )
+
+    # ── Special handler: team members / roster ───────────────────────────────
+    if any(k in q_lower for k in ("who are", "who is", "members", "our team", "participants")):
         member_names = ["Shema", "Owen", "Joel", "joe", "Deborah", "Kgosi", "Reitumetse"]
         matched_indices = []
         found_names = set()
@@ -222,20 +248,43 @@ def _offline_fallback(prompt: str) -> str:
                 }
             )
 
-    # Question keyword extraction
+    # ── Question keyword extraction ──────────────────────────────────────────
     stop_words = {
         "what", "who", "when", "where", "why", "how", "did", "do", "does", "is",
         "are", "was", "were", "the", "a", "an", "in", "on", "at", "for", "to",
         "of", "and", "or", "our", "we", "they", "them", "this", "that", "there",
-        "can", "could", "should", "would", "please", "tell", "me", "about"
+        "can", "could", "should", "would", "please", "tell", "me", "about", "more",
+        "show", "give", "know", "just", "like", "need", "want", "have", "has",
     }
     clean_q = re.sub(r"[^\w\s]", " ", q_lower)
     q_tokens = [w for w in clean_q.split() if len(w) > 2 and w not in stop_words]
+
+    # Normalised question text for similarity check
+    q_norm = " ".join(sorted(q_tokens))
 
     scored = []
     for idx, _platform, author_offset, content in blocks:
         text = content.strip()
         text_lower = text.lower()
+
+        # ── Skip chunks that ARE questions themselves ────────────────────────
+        # A chunk ending in '?' is a question from a user, not an answer.
+        text_stripped = text_lower.rstrip()
+        if text_stripped.endswith("?"):
+            continue
+
+        # ── Skip chunks that are near-identical to the question ─────────────
+        # e.g. the ingested message "tell me more about hackathon?" should not
+        # be returned as the answer to "tell me more about hackathon?"
+        clean_chunk = re.sub(r"[^\w\s]", " ", text_lower)
+        chunk_tokens = [w for w in clean_chunk.split() if len(w) > 2 and w not in stop_words]
+        chunk_norm = " ".join(sorted(chunk_tokens))
+        if q_tokens and chunk_tokens:
+            overlap = len(set(q_tokens) & set(chunk_tokens))
+            similarity = overlap / max(len(set(q_tokens)), len(set(chunk_tokens)), 1)
+            if similarity >= 0.7:  # 70%+ overlap → chunk IS the question → skip
+                continue
+
         score = 0
 
         # Score based on overlap with question keywords
@@ -245,18 +294,29 @@ def _offline_fallback(prompt: str) -> str:
             elif len(t) >= 4 and any(w.startswith(t[:4]) for w in text_lower.split()):
                 score += 1
 
-        # Check for key action words in question & chunk
-        for kw in ("deadline", "date", "time", "meeting", "prize", "cash", "github", "rules", "submission", "submit"):
+        # Boost for key domain words
+        for kw in ("deadline", "date", "time", "meeting", "prize", "cash", "github",
+                   "rules", "submission", "submit", "hackathon", "unipod"):
             if kw in q_lower and kw in text_lower:
                 score += 4
 
         scored.append((score, int(idx), author_offset.strip(), text))
 
+    if not scored:
+        return json.dumps(
+            {
+                "answer": "I couldn't find enough evidence to answer that.",
+                "confidence": "insufficient",
+                "decision": None,
+                "reason": None,
+                "evidence_indices": [],
+            }
+        )
+
     scored.sort(key=lambda x: -x[0])
     best_score, best_idx, best_author, best_text = scored[0]
 
-    # If the overlap score is too low, the evidence is not relevant to the question!
-    # Return "insufficient" so the bot stays silent instead of giving random unrelated answers!
+    # If the overlap score is too low, evidence is not relevant → stay silent
     if best_score < 3:
         return json.dumps(
             {
@@ -268,10 +328,10 @@ def _offline_fallback(prompt: str) -> str:
             }
         )
 
-    author_prefix = f"{best_author}: " if best_author and best_author != "Unknown" else ""
+    # Return the best matching chunk as the answer (without restating the author prefix)
     return json.dumps(
         {
-            "answer": f"{author_prefix}{best_text}",
+            "answer": best_text,
             "confidence": "high" if best_score >= 6 else "medium",
             "decision": None,
             "reason": None,
@@ -279,3 +339,4 @@ def _offline_fallback(prompt: str) -> str:
             "note": "extractive-match",
         }
     )
+

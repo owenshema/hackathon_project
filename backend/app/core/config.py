@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_model: str = "mistralai/mistral-nemotron"
+    nvidia_model: str = "google/diffusiongemma-26b-a4b-it"
 
     # Speed knobs — WhatsApp/Teams need sub-~15s replies
     llm_timeout_seconds: float = 25.0
