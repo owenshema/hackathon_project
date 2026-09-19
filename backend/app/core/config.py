@@ -29,9 +29,9 @@ class Settings(BaseSettings):
     nvidia_model: str = "mistralai/mistral-nemotron"
 
     # Speed knobs — WhatsApp/Teams need sub-~15s replies
-    llm_timeout_seconds: float = 12.0
+    llm_timeout_seconds: float = 25.0
     llm_max_tokens: int = 400
-    llm_retries: int = 0
+    llm_retries: int = 1
     use_local_embeddings: bool = False
     platform_fast_mode: bool = True
 

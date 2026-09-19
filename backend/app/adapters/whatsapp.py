@@ -78,19 +78,36 @@ class WhatsAppAdapter(PlatformAdapter):
             or data.get("from")
             or "unknown"
         )
-        author_name = (
-            contact.get("displayName")
-            or contact.get("name")
-            or chat.get("name")
-            or author_phone
-        )
-
         is_group = (chat.get("type") == "group") or str(
             data.get("from") or chat.get("id") or ""
         ).endswith("@g.us")
         group_id = None
         if is_group:
             group_id = chat.get("id") or data.get("chatId") or data.get("from")
+
+        # Known team roster by phone number
+        TEAM_ROSTER = {
+            "+250782972679": "Shema Owen",
+            "250782972679": "Shema Owen",
+            "+250791690151": "Shema Owen",
+            "250791690151": "Shema Owen",
+            "+250789201681": "Joel",
+            "250789201681": "Joel",
+        }
+
+        # For group messages, chat.name is the GROUP name (e.g. UNIPOD TASK GROUP).
+        # We must never assign the group name as the author.
+        author_name = (
+            contact.get("displayName")
+            or contact.get("name")
+            or data.get("authorName")
+            or data.get("participantName")
+            or TEAM_ROSTER.get(author_phone)
+            or (author_phone if is_group else chat.get("name"))
+            or author_phone
+        )
+        if is_group and (author_name == chat.get("name") or not author_name):
+            author_name = TEAM_ROSTER.get(author_phone) or author_phone
 
         conversation_id = group_id or author_phone
         # Reply target for Wassenger send API

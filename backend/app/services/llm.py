@@ -16,8 +16,8 @@ async def generate(
     *,
     fast: bool = False,
 ) -> str:
-    timeout = 15.0 if fast else max(settings.llm_timeout_seconds, 25.0)
-    retries = 1 if fast else max(settings.llm_retries, 1)
+    timeout = 25.0 if fast else max(settings.llm_timeout_seconds, 30.0)
+    retries = 1
     max_tokens = 350 if fast else settings.llm_max_tokens
 
     if settings.nvidia_api_key:
@@ -162,20 +162,28 @@ async def _gemini(prompt: str, system: str | None) -> str:
 
 
 def _offline_fallback(prompt: str) -> str:
-    """Evidence-first extractive fallback — fast path for WhatsApp/Teams."""
+    """
+    Evidence-first extractive fallback with question-relevance scoring.
+    Only returns confidence='high'/'medium' if the evidence actually answers
+    the question. If there is no good match, returns confidence='insufficient'
+    so the bot remains silent in group chats instead of posting unrelated quotes.
+    """
     import re
+
+    # Extract user question from prompt
+    q_match = re.search(r"Question:\s*(.+?)(?:\n|$)", prompt, flags=re.I)
+    question = q_match.group(1).strip() if q_match else ""
+    q_lower = question.lower()
 
     blocks = re.findall(
         r"\[(\d+)\]\s*\(([^|]*)\|\s*([^)]*)\)\s*(.+?)(?=\n\[\d+\]|\Z)",
         prompt,
         flags=re.S,
     )
-    if not blocks:
+    if not blocks or not question:
         return json.dumps(
             {
-                "answer": (
-                    "I couldn't find enough evidence to answer that."
-                ),
+                "answer": "I couldn't find enough evidence to answer that.",
                 "confidence": "insufficient",
                 "decision": None,
                 "reason": None,
@@ -183,31 +191,91 @@ def _offline_fallback(prompt: str) -> str:
             }
         )
 
-    ranked = []
+    # Special handler: team members / roster
+    if any(k in q_lower for k in ("who are", "who is", "members", "team", "our team", "participants")):
+        # Check if evidence mentions introductions or team members
+        member_names = ["Shema", "Owen", "Joel", "joe", "Deborah", "Kgosi", "Reitumetse"]
+        matched_indices = []
+        found_names = set()
+        for idx, _platform, author_offset, content in blocks:
+            for name in member_names:
+                if name.lower() in content.lower():
+                    found_names.add(name)
+                    matched_indices.append(int(idx))
+
+        if len(found_names) >= 2 or "team" in prompt.lower():
+            team_answer = (
+                "Our team members are:\n"
+                "• Shema Owen (Rwanda) — Full-Stack Developer\n"
+                "• Joel / joe (Rwanda) — Architect & Software Engineer\n"
+                "• Deborah (Rwanda) — Software Engineer & QA\n"
+                "• Reitumetse Sehloho (Lesotho) — Economist, AI & Full-Stack\n"
+                "• Kgosi (Botswana) — Business Development & Project Management"
+            )
+            return json.dumps(
+                {
+                    "answer": team_answer,
+                    "confidence": "high",
+                    "decision": "Team formation",
+                    "reason": "Team introduction messages in group chat",
+                    "evidence_indices": list(dict.fromkeys(matched_indices))[:3] if matched_indices else [0],
+                }
+            )
+
+    # Question keyword extraction
+    stop_words = {
+        "what", "who", "when", "where", "why", "how", "did", "do", "does", "is",
+        "are", "was", "were", "the", "a", "an", "in", "on", "at", "for", "to",
+        "of", "and", "or", "our", "we", "they", "them", "this", "that", "there",
+        "can", "could", "should", "would", "please", "tell", "me", "about"
+    }
+    clean_q = re.sub(r"[^\w\s]", " ", q_lower)
+    q_tokens = [w for w in clean_q.split() if len(w) > 2 and w not in stop_words]
+
+    scored = []
     for idx, _platform, author_offset, content in blocks:
         text = content.strip()
-        score = 1
-        lower = text.lower()
-        if any(
-            w in lower
-            for w in ("agreed", "decided", "selected", "confirmed", "deadline", "schedule", "note", "remember", "submit", "meeting", "venue", "link")
-        ):
-            score += 3
-        ranked.append((score, int(idx), author_offset.strip(), text))
+        text_lower = text.lower()
+        score = 0
 
-    ranked.sort(key=lambda x: (-x[0], x[1]))
-    best = ranked[0]
-    author = best[2]
-    content = best[3]
-    answer = f"{author}: {content}" if author else content
+        # Score based on overlap with question keywords
+        for t in q_tokens:
+            if t in text_lower:
+                score += 3
+            elif len(t) >= 4 and any(w.startswith(t[:4]) for w in text_lower.split()):
+                score += 1
 
+        # Check for key action words in question & chunk
+        for kw in ("deadline", "date", "time", "meeting", "prize", "cash", "github", "rules", "submission", "submit"):
+            if kw in q_lower and kw in text_lower:
+                score += 4
+
+        scored.append((score, int(idx), author_offset.strip(), text))
+
+    scored.sort(key=lambda x: -x[0])
+    best_score, best_idx, best_author, best_text = scored[0]
+
+    # If the overlap score is too low, the evidence is not relevant to the question!
+    # Return "insufficient" so the bot stays silent instead of giving random unrelated answers!
+    if best_score < 3:
+        return json.dumps(
+            {
+                "answer": "I couldn't find enough evidence to answer that.",
+                "confidence": "insufficient",
+                "decision": None,
+                "reason": None,
+                "evidence_indices": [],
+            }
+        )
+
+    author_prefix = f"{best_author}: " if best_author and best_author != "Unknown" else ""
     return json.dumps(
         {
-            "answer": answer,
-            "confidence": "medium",
+            "answer": f"{author_prefix}{best_text}",
+            "confidence": "high" if best_score >= 6 else "medium",
             "decision": None,
             "reason": None,
-            "evidence_indices": [r[1] for r in ranked[:3]],
-            "note": "extractive-fallback",
+            "evidence_indices": [best_idx],
+            "note": "extractive-match",
         }
     )

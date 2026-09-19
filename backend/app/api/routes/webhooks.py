@@ -1,22 +1,26 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import get_adapter
 from app.adapters.teams import TeamsAdapter
 from app.adapters.whatsapp import WhatsAppAdapter
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.models import Message as MessageModel
+from app.db.session import SessionLocal, get_db
 from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
     needs_clarification,
-    strip_bot_mention,
 )
 from app.services.ingestion import ingest_messages
 from app.services.response_router import handle_user_message
 
 router = APIRouter()
+
+# In-memory guard against concurrent retries of the same message
+_in_flight: set[str] = set()
 
 
 def _normalize_phone(value: str | None) -> str:
@@ -36,13 +40,112 @@ async def whatsapp_verify(
     return {"status": "ok", "provider": "wassenger" if settings.wassenger_api_key else "meta"}
 
 
-@router.post("/whatsapp")
-async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+async def _handle_whatsapp_payload(payload: dict) -> None:
     """
-    Group behavior:
-    1. Store EVERY inbound message into community memory
-    2. If the message needs clarification, answer from previously shared chats
-    3. Reply in the same group with answer + evidence trail
+    Background task — runs AFTER 200 OK is already returned to Wassenger.
+    This prevents Wassenger from retrying due to slow LLM response times.
+    Two-layer deduplication:
+      1. In-memory _in_flight set (prevents concurrent retries)
+      2. DB external_id check (prevents retries after restart)
+    """
+    adapter: WhatsAppAdapter = get_adapter(Platform.WHATSAPP)  # type: ignore[assignment]
+    bot_phone = _normalize_phone(settings.wassenger_phone)
+
+    messages = adapter.normalize_inbound(payload)
+    if not messages:
+        return
+
+    async with SessionLocal() as db:
+        # Layer 1: filter out any IDs already in-flight
+        candidates = [m for m in messages if m.external_id not in _in_flight]
+        if not candidates:
+            print("[WhatsApp] All messages already in-flight — skipping.")
+            return
+
+        # Layer 2: filter out any IDs already stored in DB (Wassenger retry guard)
+        incoming_ids = [m.external_id for m in candidates if m.external_id]
+        if incoming_ids:
+            rows = await db.execute(
+                select(MessageModel.external_id).where(
+                    MessageModel.external_id.in_(incoming_ids)
+                )
+            )
+            already_stored = set(rows.scalars().all())
+            candidates = [m for m in candidates if m.external_id not in already_stored]
+
+        if not candidates:
+            print("[WhatsApp] All messages already stored (duplicate delivery) — skipping.")
+            return
+
+        # Mark as in-flight
+        new_ids = {m.external_id for m in candidates}
+        _in_flight.update(new_ids)
+
+        try:
+            stored = await ingest_messages(db, candidates)
+            stored_by_external = {m.external_id: m for m in stored}
+
+            for msg in candidates:
+                # Skip bot's own echoed outbound messages
+                author_digits = _normalize_phone(msg.author_id)
+                if bot_phone and author_digits and author_digits == bot_phone:
+                    continue
+
+                is_group = bool((msg.metadata or {}).get("is_group"))
+                text, was_mentioned = check_and_strip_bot_mention(
+                    msg.text,
+                    bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe"],
+                )
+
+                if not needs_clarification(text, is_group=is_group, was_mentioned=was_mentioned):
+                    continue
+
+                exclude_ids: set = set()
+                row = stored_by_external.get(msg.external_id)
+                if row:
+                    exclude_ids.add(row.id)
+
+                result, formatted = await handle_user_message(
+                    db,
+                    text=text,
+                    user_id=msg.author_id,
+                    user_name=msg.author_name,
+                    platform=Platform.WHATSAPP,
+                    conversation_id=msg.conversation_id if is_group else None,
+                    exclude_message_ids=exclude_ids,
+                    require_evidence=True,
+                )
+
+                # In groups: stay silent ONLY if confidence is insufficient and bot was not tagged
+                if is_group and isinstance(result, MemoryAnswer):
+                    if result.confidence == "insufficient" and not was_mentioned:
+                        continue
+
+                try:
+                    delivery = await adapter.send_reply(
+                        conversation_id=msg.conversation_id,
+                        text=formatted,
+                        reply_to_id=msg.external_id,
+                        metadata=msg.metadata,
+                    )
+                    print(f"[WhatsApp] Reply ok={delivery.get('ok')} mode={delivery.get('mode')}")
+                except Exception as exc:
+                    print(f"[WhatsApp] Reply error: {exc}")
+        finally:
+            # Always clear in-flight marks
+            for eid in new_ids:
+                _in_flight.discard(eid)
+
+
+@router.post("/whatsapp")
+async def whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Receives Wassenger inbound webhook events.
+    Returns HTTP 200 IMMEDIATELY so Wassenger never times out and retries.
+    All processing (deduplication, RAG, reply) is done in a background task.
     """
     try:
         body_bytes = await request.body()
@@ -50,92 +153,19 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
             return {"status": "ok", "message": "empty body"}
         payload = json.loads(body_bytes.decode("utf-8", errors="replace"))
     except Exception as exc:
-        print(f"[WhatsApp Webhook] Invalid JSON payload: {exc}")
+        print(f"[WhatsApp Webhook] Invalid JSON: {exc}")
         return {"status": "ok", "error": "invalid json"}
 
-    adapter: WhatsAppAdapter = get_adapter(Platform.WHATSAPP)  # type: ignore[assignment]
-
     event = payload.get("event")
-    print(f"[WhatsApp Webhook Received] event={event}, keys={list(payload.keys())}")
+    print(f"[WhatsApp Webhook] event={event}")
 
+    # Ignore non-message events
     if event and event != "message:in:new" and "entry" not in payload:
         return {"status": "ignored", "event": event}
 
-    messages = adapter.normalize_inbound(payload)
-    if not messages:
-        return {"status": "ignored"}
-
-    # Never process our own outbound number as a user ask
-    bot_phone = _normalize_phone(settings.wassenger_phone)
-
-    stored = await ingest_messages(db, messages)
-    stored_by_external = {m.external_id: m for m in stored}
-
-    replies = 0
-    skipped = 0
-    delivery_errors = []
-
-    for msg in messages:
-        author_digits = _normalize_phone(msg.author_id)
-        if bot_phone and author_digits and author_digits == bot_phone:
-            skipped += 1
-            continue
-
-        is_group = bool((msg.metadata or {}).get("is_group"))
-        text, was_mentioned = check_and_strip_bot_mention(
-            msg.text,
-            bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe"],
-        )
-        if not needs_clarification(text, is_group=is_group, was_mentioned=was_mentioned):
-            skipped += 1
-            continue
-
-        exclude_ids = set()
-        row = stored_by_external.get(msg.external_id)
-        if row:
-            exclude_ids.add(row.id)
-
-        result, formatted = await handle_user_message(
-            db,
-            text=text,
-            user_id=msg.author_id,
-            user_name=msg.author_name,
-            platform=Platform.WHATSAPP,
-            conversation_id=msg.conversation_id if is_group else None,
-            exclude_message_ids=exclude_ids,
-            require_evidence=True,
-        )
-
-        # In groups: only reply when shared-chat evidence exists, OR if the bot was explicitly @mentioned
-        if is_group and isinstance(result, MemoryAnswer):
-            if (result.confidence == "insufficient" or not result.evidence) and not was_mentioned:
-                skipped += 1
-                continue
-
-        try:
-            delivery = await adapter.send_reply(
-                conversation_id=msg.conversation_id,
-                text=formatted,
-                reply_to_id=msg.external_id,
-                metadata=msg.metadata,
-            )
-            if not delivery.get("ok"):
-                delivery_errors.append(delivery)
-            else:
-                replies += 1
-        except Exception as exc:
-            print(f"[WhatsApp] reply error: {exc}")
-            delivery_errors.append({"ok": False, "error": str(exc)})
-
-    return {
-        "status": "ok",
-        "provider": adapter.provider,
-        "processed": len(messages),
-        "ingested": len(stored),
-        "replies": replies,
-        "skipped": skipped,
-        "delivery_errors": delivery_errors,
-    }
+    # Schedule background processing — return 200 right away
+    background_tasks.add_task(_handle_whatsapp_payload, payload)
+    return {"status": "ok", "message": "queued"}
 
 
 @router.post("/teams")

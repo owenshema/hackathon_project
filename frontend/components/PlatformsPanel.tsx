@@ -51,11 +51,11 @@ export function PlatformsPanel() {
           <strong>WhatsApp</strong>
           <span>
             {status?.whatsapp.configured
-              ? `Connected (${(status.whatsapp as { provider?: string }).provider || "live"})`
+              ? `Connected (${status.whatsapp.provider || "live"})`
               : "Not connected"}
           </span>
-          {(status?.whatsapp as { phone?: string })?.phone && (
-            <small>Number: {(status.whatsapp as { phone?: string }).phone}</small>
+          {status?.whatsapp.phone && (
+            <small>Number: {status.whatsapp.phone}</small>
           )}
           {!!status?.whatsapp.missing?.length && (
             <small>Missing: {status.whatsapp.missing.join(", ")}</small>
