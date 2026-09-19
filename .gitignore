@@ -51,3 +51,5 @@ logs/
 credentials.json
 *.pem
 *.key
+
+backend/cloudflared.exe
