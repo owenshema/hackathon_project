@@ -1,0 +1,8 @@
+UniPods Hackathon Planning
+00:05:12 Sarah: Let's align on the stack before Friday.
+00:12:40 Alex: We need something that can store chat history and vectors together.
+00:38:12 John: I propose we use PostgreSQL for the project because of pgvector support.
+00:39:01 Maya: Option B works for me if we can cite message timestamps.
+00:42:18 John: Decision — PostgreSQL is selected as option B.
+00:45:30 Sarah: Action item — Alex will wire the WhatsApp webhook tonight.
+00:51:02 Maya: Team declarations are still due Thursday, 17 September.
