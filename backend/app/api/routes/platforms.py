@@ -86,6 +86,12 @@ async def simulate_platform(body: SimulateRequest, db: AsyncSession = Depends(ge
     if body.platform not in {Platform.WHATSAPP, Platform.TEAMS}:
         raise HTTPException(400, "platform must be whatsapp or teams")
 
+    reply_kind = (
+        "group"
+        if body.platform == Platform.WHATSAPP
+        and str(body.conversation_id).endswith("@g.us")
+        else "phone"
+    )
     nm = NormalizedMessage(
         platform=body.platform,
         source_type=SourceType.CHAT,
@@ -97,7 +103,7 @@ async def simulate_platform(body: SimulateRequest, db: AsyncSession = Depends(ge
         timestamp=datetime.now(timezone.utc).isoformat(),
         metadata={
             "simulated": True,
-            "reply_kind": "phone",
+            "reply_kind": reply_kind,
             "reply_to": body.conversation_id,
         },
     )

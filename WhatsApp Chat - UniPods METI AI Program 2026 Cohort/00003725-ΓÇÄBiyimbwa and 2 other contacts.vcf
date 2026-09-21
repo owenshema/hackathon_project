@@ -1,0 +1,23 @@
+BEGIN:VCARD
+VERSION:3.0
+N:;Biyimbwa;;;
+FN:Biyimbwa
+ORG:Strasburger
+TITLE:
+TEL;type=Mobile;waid=256787004799:+256 787 004799
+X-WA-BIZ-DESCRIPTION:📚🏈😱One stop point for quality, authentic products
+X-WA-BIZ-NAME:Biyimbwa
+END:VCARD_$!<VCard-Separator>!$_BEGIN:VCARD
+VERSION:3.0
+N:;Lemukol;;;
+FN:Lemukol
+TEL;type=Mobile;waid=256740945989:+256 740 945989
+END:VCARD_$!<VCard-Separator>!$_BEGIN:VCARD
+VERSION:3.0
+N:;Mahad;;;
+FN:Mahad
+TEL;type=Mobile;waid=256765552897:+256 765 552897
+TEL;type=Home;waid=256749066875:+256 749 066875
+X-WA-BIZ-DESCRIPTION:Cutting edge technology
+X-WA-BIZ-NAME:Mahad
+END:VCARD

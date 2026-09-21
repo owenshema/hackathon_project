@@ -1,6 +1,8 @@
 """WhatsApp adapter via Wassenger API (primary) with Meta Cloud API fallback."""
 
 from datetime import datetime, timezone
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -256,12 +258,66 @@ class WhatsAppAdapter(PlatformAdapter):
         print(f"[WhatsApp mock reply → {to}] {text[:240]}")
         return {"ok": True, "mode": "mock", "to": to}
 
+    async def send_attachment(
+        self,
+        *,
+        conversation_id: str,
+        file_path: str,
+        caption: str = "",
+        display_filename: str | None = None,
+        media_url: str | None = None,
+        reply_to_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        meta = metadata or {}
+        to = meta.get("reply_to") or conversation_id
+        kind = meta.get("reply_kind") or (
+            "group" if str(to).endswith("@g.us") else "phone"
+        )
+
+        if settings.wassenger_api_key:
+            if media_url:
+                return await self._send_wassenger_url_attachment(
+                    to=str(to),
+                    kind=str(kind),
+                    media_url=media_url,
+                    caption=caption,
+                    display_filename=display_filename,
+                    reply_to_id=reply_to_id,
+                )
+            return await self._send_wassenger_attachment(
+                to=str(to),
+                kind=str(kind),
+                file_path=file_path,
+                caption=caption,
+                display_filename=display_filename,
+                reply_to_id=reply_to_id,
+            )
+
+        print(f"[WhatsApp mock attachment -> {to}] {file_path}")
+        return {"ok": True, "mode": "mock", "to": to, "file": file_path}
+
     async def _send_wassenger(
-        self, *, to: str, kind: str, text: str, reply_to_id: str | None = None
+        self,
+        *,
+        to: str,
+        kind: str,
+        text: str,
+        reply_to_id: str | None = None,
+        media_file_id: str | None = None,
+        media_url: str | None = None,
+        display_filename: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"message": text[:4000]}
         if settings.wassenger_device_id:
             body["device"] = settings.wassenger_device_id
+        if media_file_id:
+            body["media"] = {"file": media_file_id}
+        elif media_url:
+            media: dict[str, Any] = {"url": media_url}
+            if display_filename:
+                media["filename"] = display_filename
+            body["media"] = media
 
         if reply_to_id and not reply_to_id.startswith("sim-"):
             body["quote"] = reply_to_id
@@ -296,6 +352,109 @@ class WhatsAppAdapter(PlatformAdapter):
                     "request": {k: v for k, v in body.items() if k != "message"},
                 }
             return {"ok": True, "mode": "wassenger", "response": resp.json()}
+
+    async def _send_wassenger_attachment(
+        self,
+        *,
+        to: str,
+        kind: str,
+        file_path: str,
+        caption: str,
+        display_filename: str | None = None,
+        reply_to_id: str | None = None,
+    ) -> dict[str, Any]:
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            return {
+                "ok": False,
+                "mode": "wassenger",
+                "error": f"Attachment file not found: {file_path}",
+            }
+
+        upload_name = display_filename or path.name
+        mime = mimetypes.guess_type(upload_name)[0] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        async with httpx.AsyncClient(timeout=60) as client:
+            with path.open("rb") as fh:
+                upload = await client.post(
+                    f"{WASSENGER_API}/files",
+                    headers={"Token": settings.wassenger_api_key},
+                    files={"file": (upload_name, fh, mime)},
+                    data=(
+                        {"device": settings.wassenger_device_id}
+                        if settings.wassenger_device_id
+                        else None
+                    ),
+                )
+            if upload.status_code == 409:
+                try:
+                    data = upload.json()
+                    file_id = (data.get("meta") or {}).get("file") or data.get("file")
+                except ValueError:
+                    file_id = None
+                if not file_id:
+                    detail = upload.text[:500]
+                    print(f"[Wassenger] duplicate upload without file id: {detail}")
+                    return {
+                        "ok": False,
+                        "mode": "wassenger",
+                        "status": upload.status_code,
+                        "error": detail,
+                    }
+                data = {"id": file_id}
+            elif upload.status_code >= 400:
+                detail = upload.text[:500]
+                print(f"[Wassenger] file upload failed {upload.status_code}: {detail}")
+                return {
+                    "ok": False,
+                    "mode": "wassenger",
+                    "status": upload.status_code,
+                    "error": detail,
+                }
+
+            else:
+                data = upload.json()
+            file_id = (
+                data.get("id")
+                or data.get("_id")
+                or data.get("file")
+                or (data.get("data") or {}).get("id")
+            )
+            if isinstance(data, list) and data:
+                file_id = data[0].get("id") or data[0].get("_id") or data[0].get("file")
+            if not file_id:
+                return {
+                    "ok": False,
+                    "mode": "wassenger",
+                    "error": "Wassenger upload did not return a file id",
+                    "response": data,
+                }
+
+        return await self._send_wassenger(
+            to=to,
+            kind=kind,
+            text=caption or path.name,
+            reply_to_id=reply_to_id,
+            media_file_id=str(file_id),
+        )
+
+    async def _send_wassenger_url_attachment(
+        self,
+        *,
+        to: str,
+        kind: str,
+        media_url: str,
+        caption: str,
+        display_filename: str | None = None,
+        reply_to_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_wassenger(
+            to=to,
+            kind=kind,
+            text=caption,
+            reply_to_id=reply_to_id,
+            media_url=media_url,
+            display_filename=display_filename,
+        )
 
     async def _send_meta(
         self, *, to: str, text: str, reply_to_id: str | None

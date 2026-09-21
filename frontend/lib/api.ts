@@ -81,11 +81,15 @@ export const api = {
       teams_configured: boolean;
     }>("/api/v1/health"),
   platformsStatus: () => request<PlatformStatus>("/api/v1/platforms/status"),
-  simulatePlatform: (platform: "whatsapp" | "teams", text: string) =>
+  simulatePlatform: (
+    platform: "whatsapp" | "teams",
+    text: string,
+    opts?: { sendLive?: boolean; conversationId?: string }
+  ) =>
     request<{
       platform: string;
       configured: boolean;
-      delivery: { mode?: string };
+      delivery: { ok?: boolean; mode?: string; status?: number; error?: string };
       formatted: string;
       data: unknown;
     }>("/api/v1/platforms/simulate", {
@@ -95,7 +99,8 @@ export const api = {
         text,
         author_name: platform === "whatsapp" ? "WhatsApp User" : "Teams User",
         author_id: `${platform}-demo`,
-        conversation_id: `${platform}-demo-chat`,
+        conversation_id: opts?.conversationId || `${platform}-demo-chat`,
+        send_live: opts?.sendLive || false,
       }),
     }),
   chat: (question: string, opts?: { userId?: string; mode?: string }) =>

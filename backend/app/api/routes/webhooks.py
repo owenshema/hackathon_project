@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +14,7 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
+    is_important_unanswered_question,
     needs_clarification,
 )
 from app.services.ingestion import ingest_messages
@@ -27,6 +30,70 @@ def _normalize_phone(value: str | None) -> str:
     if not value:
         return ""
     return "".join(ch for ch in value if ch.isdigit())
+
+
+ADMIN_MENTIONS = "@250782972679 (Shema) @250789201681 (Joel)"
+
+
+def _evidence_attachments(answer: MemoryAnswer) -> list[tuple[str, str, str, str | None]]:
+    attachments: list[tuple[str, str, str, str | None]] = []
+    seen: set[str] = set()
+    allowed_suffixes = {
+        ".pdf",
+        ".ppt",
+        ".pptx",
+        ".doc",
+        ".docx",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    }
+    for ev in answer.evidence:
+        if not ev.media_url:
+            continue
+        path = Path(ev.media_url)
+        if not path.exists() or not path.is_file():
+            continue
+        if path.suffix.lower() not in allowed_suffixes:
+            continue
+        key = str(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        author = ev.author or "an official source"
+        filename = ev.media_filename or path.name
+        public_url = None
+        if settings.public_base_url and ev.message_id:
+            safe_filename = quote(filename)
+            public_url = (
+                f"{settings.public_base_url.rstrip('/')}"
+                f"/api/v1/evidence/media/{ev.message_id}/{safe_filename}"
+            )
+        attachments.append(
+            (
+                str(path),
+                filename,
+                f"Source file shared by {author}: {filename}",
+                public_url,
+            )
+        )
+        if len(attachments) >= 2:
+            break
+    return attachments
+
+
+def _format_admin_attention_reply(question: str, asker_name: str | None) -> str:
+    asker = asker_name or "someone"
+    clean_question = " ".join((question or "").split())
+    if len(clean_question) > 240:
+        clean_question = clean_question[:237] + "..."
+    return (
+        f"{ADMIN_MENTIONS} this looks important, but I couldn't find a clear answer "
+        f"in the group memory yet.\n\n"
+        f"{asker} asked: \"{clean_question}\"\n\n"
+        "Please share the correct information so everyone can rely on it."
+    )
 
 
 @router.get("/whatsapp")
@@ -116,19 +183,53 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     require_evidence=True,
                 )
 
-                # In groups: stay silent ONLY if confidence is insufficient and bot was not tagged
+                # In groups: stay silent on ordinary unanswered questions, but flag important gaps.
                 if is_group and isinstance(result, MemoryAnswer):
-                    if result.confidence == "insufficient" and not was_mentioned:
-                        continue
+                    if result.confidence == "insufficient":
+                        if is_important_unanswered_question(text):
+                            formatted = _format_admin_attention_reply(
+                                text, msg.author_name
+                            )
+                        elif not was_mentioned:
+                            continue
 
                 try:
-                    delivery = await adapter.send_reply(
-                        conversation_id=msg.conversation_id,
-                        text=formatted,
-                        reply_to_id=msg.external_id,
-                        metadata=msg.metadata,
+                    attachments = (
+                        _evidence_attachments(result)
+                        if isinstance(result, MemoryAnswer) and result.confidence != "insufficient"
+                        else []
                     )
-                    print(f"[WhatsApp] Reply ok={delivery.get('ok')} mode={delivery.get('mode')}")
+                    if attachments:
+                        file_path, display_filename, _caption, public_url = attachments[0]
+                        delivery = await adapter.send_attachment(
+                            conversation_id=msg.conversation_id,
+                            file_path=file_path,
+                            caption=formatted,
+                            display_filename=display_filename,
+                            media_url=public_url,
+                            reply_to_id=msg.external_id,
+                            metadata=msg.metadata,
+                        )
+                        print(
+                            "[WhatsApp] Reply attachment "
+                            f"ok={delivery.get('ok')} mode={delivery.get('mode')}"
+                        )
+                        if not delivery.get("ok"):
+                            delivery = await adapter.send_reply(
+                                conversation_id=msg.conversation_id,
+                                text=formatted,
+                                reply_to_id=msg.external_id,
+                                metadata=msg.metadata,
+                            )
+                            print(f"[WhatsApp] Reply ok={delivery.get('ok')} mode={delivery.get('mode')}")
+                    else:
+                        delivery = await adapter.send_reply(
+                            conversation_id=msg.conversation_id,
+                            text=formatted,
+                            reply_to_id=msg.external_id,
+                            metadata=msg.metadata,
+                        )
+                        print(f"[WhatsApp] Reply ok={delivery.get('ok')} mode={delivery.get('mode')}")
                 except Exception as exc:
                     print(f"[WhatsApp] Reply error: {exc}")
         finally:

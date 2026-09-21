@@ -67,6 +67,9 @@ class EvidenceItem(BaseModel):
     document_id: Optional[UUID] = None
     page_or_section: Optional[str] = None
     replay_url: Optional[str] = None
+    media_url: Optional[str] = None
+    media_mime: Optional[str] = None
+    media_filename: Optional[str] = None
 
 
 class MemoryAnswer(BaseModel):

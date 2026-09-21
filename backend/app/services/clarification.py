@@ -41,6 +41,85 @@ CLARIFY_PATTERNS = [
 
 _COMPILED = [re.compile(p, re.I) for p in CLARIFY_PATTERNS]
 
+GREETING_PATTERNS = [
+    r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you|ok|okay)\s*[!.]*\s*$",
+    r"^\s*(hi|hello|hey)\s+(everyone|team|guys|all)\s*[!.]*\s*$",
+]
+
+IMPORTANT_UNANSWERED_PATTERNS = [
+    r"\b(deadline|due date|submit|submission|apply|application|form|register|registration)\b",
+    r"\b(urgent|important|asap|immediately|right now|today|tomorrow)\b",
+    r"\b(meeting|session|call|google meet|link|venue|location|time)\b",
+    r"\b(requirement|required|must|need to|have to|should we|what do i need)\b",
+    r"\b(decision|decide|agreed|confirmed|approval|permission)\b",
+    r"\b(error|blocked|stuck|can't|cannot|unable|not working|issue|problem)\b",
+    r"\b(payment|prize|certificate|selection|winner|team name|github|repository)\b",
+]
+
+CURIOSITY_PATTERNS = [
+    r"\b(just curious|curious|wondering|what is|what are|why is|why are|how does|tell me about)\b",
+    r"\b(explain|learn|understand|meaning|means)\b",
+]
+
+_GREETINGS = [re.compile(p, re.I) for p in GREETING_PATTERNS]
+_IMPORTANT_UNANSWERED = [re.compile(p, re.I) for p in IMPORTANT_UNANSWERED_PATTERNS]
+_CURIOSITY = [re.compile(p, re.I) for p in CURIOSITY_PATTERNS]
+
+
+def is_greeting_or_smalltalk(text: str) -> bool:
+    raw = (text or "").strip()
+    return bool(raw and any(p.search(raw) for p in _GREETINGS))
+
+
+def is_important_unanswered_question(text: str) -> bool:
+    """
+    True when an unanswered message should be surfaced to admins instead of ignored.
+    This avoids tagging admins for greetings and low-stakes curiosity.
+    """
+    raw = (text or "").strip()
+    if not raw or is_greeting_or_smalltalk(raw):
+        return False
+
+    lower = raw.lower()
+    has_question_shape = "?" in raw or any(
+        lower.startswith(prefix)
+        for prefix in (
+            "what",
+            "when",
+            "where",
+            "who",
+            "why",
+            "how",
+            "can",
+            "could",
+            "should",
+            "is",
+            "are",
+            "do",
+            "does",
+            "did",
+        )
+    )
+    if not has_question_shape:
+        return False
+
+    important = any(p.search(raw) for p in _IMPORTANT_UNANSWERED)
+    curious = any(p.search(raw) for p in _CURIOSITY)
+    urgent_even_if_curious = bool(
+        re.search(
+            r"\b(deadline|due date|submit|submission|urgent|asap|today|tomorrow|meeting|session|required|must|blocked|stuck|can't|cannot|unable|not working)\b",
+            raw,
+            flags=re.I,
+        )
+    )
+    if curious and not urgent_even_if_curious:
+        return False
+    if important:
+        return True
+
+    # Unanswered direct requests for confirmation can block group progress.
+    return bool(re.search(r"\b(confirm|clarify|help|answer|update)\b", raw, flags=re.I))
+
 
 def needs_clarification(text: str, *, is_group: bool = False, was_mentioned: bool = False) -> bool:
     """

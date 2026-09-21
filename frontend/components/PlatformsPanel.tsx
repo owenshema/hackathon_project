@@ -7,6 +7,8 @@ export function PlatformsPanel() {
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [platform, setPlatform] = useState<"whatsapp" | "teams">("whatsapp");
   const [text, setText] = useState("What did they decide about the database?");
+  const [sendLive, setSendLive] = useState(false);
+  const [destination, setDestination] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,10 +24,32 @@ export function PlatformsPanel() {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setResult(null);
+    if (sendLive && !destination.trim()) {
+      setError(
+        platform === "whatsapp"
+          ? "Enter the WhatsApp phone number or group id to send live."
+          : "Enter the Teams conversation id to send live."
+      );
+      setBusy(false);
+      return;
+    }
     try {
-      const res = await api.simulatePlatform(platform, text);
+      const res = await api.simulatePlatform(platform, text, {
+        sendLive,
+        conversationId: destination.trim() || undefined,
+      });
+      const delivery = res.delivery || {};
       setResult(
-        `[${res.platform}] delivery=${res.delivery?.mode || "n/a"}\n\n${res.formatted}`
+        [
+          `[${res.platform}] delivery=${delivery.mode || "n/a"} ok=${delivery.ok ?? "n/a"}`,
+          delivery.status ? `status=${delivery.status}` : "",
+          delivery.error ? `error=${delivery.error}` : "",
+          "",
+          res.formatted,
+        ]
+          .filter(Boolean)
+          .join("\n")
       );
       const fresh = await api.platformsStatus();
       setStatus(fresh);
@@ -75,7 +99,7 @@ export function PlatformsPanel() {
       </div>
 
       <form className="stack" onSubmit={onSimulate}>
-        <h3>Simulate inbound message</h3>
+        <h3>{sendLive ? "Send live platform reply" : "Simulate inbound message"}</h3>
         <select
           value={platform}
           onChange={(e) => setPlatform(e.target.value as "whatsapp" | "teams")}
@@ -89,8 +113,27 @@ export function PlatformsPanel() {
           onChange={(e) => setText(e.target.value)}
           placeholder="Ask as if from WhatsApp / Teams…"
         />
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={sendLive}
+            onChange={(e) => setSendLive(e.target.checked)}
+          />
+          Send the generated reply live
+        </label>
+        {sendLive && (
+          <input
+            value={destination}
+            onChange={(e) => setDestination(e.target.value)}
+            placeholder={
+              platform === "whatsapp"
+                ? "+250... or 123456789@g.us"
+                : "Teams conversation id"
+            }
+          />
+        )}
         <button type="submit" disabled={busy || !text.trim()}>
-          Send via {platform}
+          {sendLive ? `Send live via ${platform}` : `Simulate ${platform}`}
         </button>
       </form>
 

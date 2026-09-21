@@ -11,6 +11,31 @@ from app.services.extraction import catch_me_up
 from app.services.rag import answer_question, list_decisions
 
 
+def _author_mention(author: str | None) -> str:
+    if not author:
+        return "@someone"
+
+    clean = author.strip()
+    if clean.startswith("meeting:"):
+        clean = clean.replace("meeting:", "").strip()
+    if clean in {"UNIPOD TASK GROUP", "UNIPODS COHORT 1"}:
+        return "a cohort member"
+    if clean.startswith("@"):
+        return clean
+
+    first_name = clean.split()[0].strip("():,")
+    known = {
+        "joel": "@Joel",
+        "joe": "@Joel",
+        "shema": "@Shema",
+        "owen": "@Owen",
+        "deborah": "@Deborah",
+        "kgosi": "@Kgosi",
+        "reitumetse": "@Reitumetse",
+    }
+    return known.get(first_name.lower(), f"@{first_name}" if first_name else "@someone")
+
+
 def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
     """Compact text suitable for WhatsApp / Teams (keep it short for mobile)."""
     mobile = platform in {Platform.WHATSAPP, Platform.TEAMS}
@@ -25,23 +50,22 @@ def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
         excerpt_len = 120 if mobile else 180
         for ev in answer.evidence[:limit]:
             author = ev.author or "a group member"
-            # Clean display for document/meeting sources
-            if author.startswith("meeting:"):
-                author = author.replace("meeting:", "").strip()
-            if author in {"UNIPOD TASK GROUP", "UNIPODS COHORT 1"}:
-                author = "a cohort member"
+            author_mention = _author_mention(author)
+            excerpt = ev.excerpt or ""
+            is_shared_attachment = "shared by " in excerpt.lower() or "shared image" in excerpt.lower()
 
             # Check if this evidence comes from official docs/guidelines
-            is_doc = any(k in author.lower() for k in ("guideline", "information pack", "track", "about", "hackathon", "knowledge"))
-            if is_doc:
-                clean_title = author.split(" - ")[0].strip() if " - " in author else author[:40]
-                lines.append(f"• From official documentation ({clean_title}):")
+            is_doc = any(k in excerpt.lower() for k in ("guideline", "information pack", ".pdf", ".pptx", "hackathon"))
+            if is_doc or is_shared_attachment:
+                lines.append(f"• {author_mention} shared:")
             elif ev.meeting_offset_display:
-                lines.append(f"• Said in session by {author} @ {ev.meeting_offset_display}:")
+                lines.append(f"• {author_mention} said in session @ {ev.meeting_offset_display}:")
+            elif ev.kind.value == "whatsapp_voice":
+                lines.append(f"• {author_mention} said in a voice note:")
             else:
-                lines.append(f"• Said by {author}:")
-            if ev.excerpt:
-                lines.append(f'  "{ev.excerpt[:excerpt_len]}"')
+                lines.append(f"• {author_mention} said:")
+            if excerpt:
+                lines.append(f'  "{excerpt[:excerpt_len]}"')
             if ev.replay_url and platform == Platform.WEB:
                 lines.append(f"  Replay: {ev.replay_url}")
     if answer.confidence == "insufficient":

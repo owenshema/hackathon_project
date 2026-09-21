@@ -16,7 +16,7 @@ async def generate(
     *,
     fast: bool = False,
 ) -> str:
-    timeout = 25.0 if fast else max(settings.llm_timeout_seconds, 30.0)
+    timeout = 8.0 if fast else max(settings.llm_timeout_seconds, 30.0)
     retries = 1
     max_tokens = 350 if fast else settings.llm_max_tokens
 
@@ -174,6 +174,14 @@ def _offline_fallback(prompt: str) -> str:
     q_match = re.search(r"Question:\s*(.+?)(?:\n|$)", prompt, flags=re.I)
     question = q_match.group(1).strip() if q_match else ""
     q_lower = question.lower()
+    high_stakes_terms = (
+        "deadline", "submit", "submission", "team", "teams", "declare", "declaration",
+        "rule", "rules", "requirement", "required", "must", "eligible", "eligibility",
+        "prize", "cash", "winner", "judge", "judging", "test", "testing", "deploy",
+        "meeting", "session", "link", "recording", "email", "form", "course", "mit",
+        "wadhwani", "payment", "funding", "grant",
+    )
+    high_stakes = any(term in q_lower for term in high_stakes_terms)
 
     blocks = re.findall(
         r"\[(\d+)\]\s*\(([^|]*)\|\s*([^)]*)\)\s*(.+?)(?=\n\[\d+\]|\Z)",
@@ -193,7 +201,9 @@ def _offline_fallback(prompt: str) -> str:
 
     # ── Special handler: hackathon info ─────────────────────────────────────
     hackathon_keywords = ("hackathon", "unipod", "meti", "competition", "programme", "cohort", "prize", "submission", "deadline", "challenge")
-    if any(k in q_lower for k in hackathon_keywords):
+    # Disabled: this used old demo/team facts. The fallback must answer only
+    # from retrieved evidence after the real WhatsApp export is imported.
+    if False and any(k in q_lower for k in hackathon_keywords):
         hackathon_answer = (
             "Here's what we know about our hackathon:\n\n"
             "🏆 *METI UniPods AI Innovation Programme — Cohort 1*\n"
@@ -219,7 +229,7 @@ def _offline_fallback(prompt: str) -> str:
         )
 
     # ── Special handler: team members / roster ───────────────────────────────
-    if any(k in q_lower for k in ("who are", "who is", "members", "our team", "participants")):
+    if False and any(k in q_lower for k in ("who are", "who is", "members", "our team", "participants")):
         member_names = ["Shema", "Owen", "Joel", "joe", "Deborah", "Kgosi", "Reitumetse"]
         matched_indices = []
         found_names = set()
@@ -266,6 +276,16 @@ def _offline_fallback(prompt: str) -> str:
     for idx, _platform, author_offset, content in blocks:
         text = content.strip()
         text_lower = text.lower()
+        meta_lower = author_offset.lower()
+        trusted = (
+            "trust=trusted" in meta_lower
+            or any(name in meta_lower for name in ("diane", "gift", "munira", "jeovaire", "charles"))
+            or "attached document" in meta_lower
+        )
+        if "bot" in meta_lower or "meti_bot" in meta_lower:
+            continue
+        if high_stakes and not trusted:
+            continue
 
         # ── Skip chunks that ARE questions themselves ────────────────────────
         # A chunk ending in '?' is a question from a user, not an answer.
@@ -299,6 +319,8 @@ def _offline_fallback(prompt: str) -> str:
                    "rules", "submission", "submit", "hackathon", "unipod"):
             if kw in q_lower and kw in text_lower:
                 score += 4
+        if trusted:
+            score += 4
 
         scored.append((score, int(idx), author_offset.strip(), text))
 

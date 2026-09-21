@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: str = "http://localhost:3000"
     frontend_url: str = "http://localhost:3000"
+    public_base_url: str = ""
 
     # Local Postgres default for this hackathon machine
     database_url: str = (

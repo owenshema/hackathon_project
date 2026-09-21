@@ -36,16 +36,28 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 async def embed_and_store_message(db: AsyncSession, message: "Message") -> Chunk:
+    media_note = ""
+    if message.media_url:
+        media_label = message.media_mime or message.source_type or "media"
+        media_note = f"\n[Attached media: {media_label}. URL/id available to the system.]"
+
     vectors = embed_texts([message.text])
     chunk = Chunk(
         message_id=message.id,
-        content=message.text,
+        content=f"{message.text}{media_note}",
         embedding=vectors[0] if vectors else None,
         platform=message.platform,
         author_name=message.author_name,
         timestamp=message.timestamp,
         meeting_offset_sec=message.meeting_offset_sec,
-        meta={"source_type": message.source_type, "external_id": message.external_id, "conversation_id": message.conversation_id},
+        meta={
+            "source_type": message.source_type,
+            "external_id": message.external_id,
+            "conversation_id": message.conversation_id,
+            "media_url": message.media_url,
+            "media_mime": message.media_mime,
+            "has_media": bool(message.media_url),
+        },
     )
     db.add(chunk)
     await db.commit()

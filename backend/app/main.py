@@ -34,6 +34,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    # Next.js may bind 3000/3001/3002 when ports are busy
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+" if settings.is_dev else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

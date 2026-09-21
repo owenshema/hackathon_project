@@ -1,11 +1,12 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message
 from app.db.session import get_db
-from app.services.evidence import evidence_from_message
+from app.services.evidence import evidence_from_message, friendly_media_filename
 
 router = APIRouter()
 
@@ -56,3 +57,21 @@ async def get_evidence(message_id: UUID, db: AsyncSession = Depends(get_db)):
     if not msg:
         raise HTTPException(status_code=404, detail="Evidence not found")
     return evidence_from_message(msg).model_dump(mode="json")
+
+
+@router.get("/evidence/media/{message_id}/{filename}")
+async def download_evidence_media(
+    message_id: UUID,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+):
+    msg = await db.get(Message, message_id)
+    if not msg or not msg.media_url:
+        raise HTTPException(status_code=404, detail="Evidence media not found")
+    path = msg.media_url
+    display_name = friendly_media_filename(path, msg.text) or filename
+    return FileResponse(
+        path,
+        media_type=msg.media_mime or "application/octet-stream",
+        filename=display_name,
+    )
