@@ -16,9 +16,9 @@ async def generate(
     *,
     fast: bool = False,
 ) -> str:
-    timeout = 8.0 if fast else max(settings.llm_timeout_seconds, 30.0)
+    timeout = 35.0 if fast else max(settings.llm_timeout_seconds, 40.0)
     retries = 1
-    max_tokens = 350 if fast else settings.llm_max_tokens
+    max_tokens = 900 if fast else max(settings.llm_max_tokens, 1000)
 
     if settings.nvidia_api_key:
         try:
@@ -105,7 +105,7 @@ async def _nvidia(
         "model": settings.nvidia_model,
         "messages": messages,
         "temperature": 0.1,
-        "max_tokens": max_tokens,
+        "max_tokens": max(max_tokens, 1200),
         "stream": False,
     }
     last_error: Exception | None = None
@@ -126,7 +126,25 @@ async def _nvidia(
                 continue
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"] or ""
+            msg = data["choices"][0]["message"]
+            content = msg.get("content")
+            reasoning = msg.get("reasoning_content") or ""
+            if content:
+                return content
+            # deepseek-v4.1-flash is a reasoning model: the actual answer may be in reasoning_content
+            # Try to extract JSON object from it
+            if reasoning:
+                import re as _re
+                json_match = _re.search(r"\{[\s\S]*\}", reasoning)
+                if json_match:
+                    return json_match.group(0)
+                # If no JSON found, wrap the reasoning conclusion in JSON form
+                # Find the last non-empty sentence as the answer
+                lines = [l.strip() for l in reasoning.strip().split("\n") if l.strip()]
+                answer_line = lines[-1] if lines else reasoning.strip()
+                import json as _json
+                return _json.dumps({"answer": answer_line, "confidence": "medium", "decision": None, "reason": None, "evidence_indices": []})
+            return ""
     if last_error:
         raise last_error
     raise RuntimeError("NVIDIA request failed")

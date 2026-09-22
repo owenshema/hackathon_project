@@ -1,48 +1,56 @@
 """
 Master ingestion script:
 1. Ingests the official METI UniPods AI Innovation Programme Information Pack (PDF).
-2. Ingests the full UniPods Hackathon Guidelines with all rules, criteria, and prize breakdown.
+2. Ingests the full UniPods Hackathon Guidelines with all rules, criteria, testing rotation, and prize breakdown.
 3. Ingests the entire UniPods METI AI Program 2026 Cohort community WhatsApp history (all official announcements, Q&A, schedules, recordings links).
-4. Ingests the team's internal conversations (UNIPOD TASK GROUP).
-5. Populates structured decisions, deadlines, links, and action items.
+4. Ingests the parsed WhatsApp export chat from '_chat.txt' (all 1,200+ cohort messages up to Sep 22, 2026).
+5. Ingests attached documents (PDFs, PPTX) and images.
+6. Ingests the team's internal conversations (UNIPOD TASK GROUP).
+7. Populates structured decisions, deadlines, links, and action items.
 """
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from sqlalchemy import delete, select
 from app.db.session import SessionLocal, init_db
 from app.db.models import Message, Chunk, Decision, ActionItem, Meeting
 from app.schemas.memory import NormalizedMessage, Platform, SourceType
 from app.services.ingestion import ingest_messages
 from app.services.meetings import ingest_transcript_file
+from ingest_whatsapp_export import parse_chat, attachment_shares, parse_documents, parse_image_attachments
 
 INFO_PACK_CONTENT = """00:00 About - METI UniPods AI Innovation Programme: Information Pack for Selected Teams (Cohort 1).
 00:10 Purpose - An AI skilling and venture building programme funded by the Japanese Ministry of Economy, Trade and Industry (METI). Its goal is to give innovators technical skills, entrepreneurial grounding and support to turn AI skills into ventures. Builds pipeline for timbuktoo Hubs (UNDP initiative offering early-stage capital, policy and technical support through ten thematic pan-African hubs).
-00:30 UniPods - Makerspaces located in public universities across Africa providing technical support from ideation through prototyping, testing and market access. Currently 23 UniPods across 21 countries, with five more expected by December 2026.
-01:00 Track 1 MIT Foundational AI - Massachusetts Institute of Technology (MIT) covers introduction to AI, Python coding, data analytics, sustainable energy, transportation, medicine, entrepreneurship. Self-paced, covered via fee waiver code (normally $900). Enrolment via individual link sent to applicant email. Dashboard access required. Expected completion: 18 October 2026. 16 foundational modules are compulsory; vertical modules are optional. Contact: uaisupport@mit.edu.
-01:30 Track 2 Wadhwani Ignite Entrepreneurship - 14-week experiential venture building curriculum by Wadhwani Foundation. Instructor-led by Charles Bolton. Tuesdays 3:00 PM CAT (live class), Thursdays 3:00 PM CAT (live coaching & Q&A). In-person UniPod meetups every three weeks. Module 1 Problem Statement: max 350 characters, customer-focused, root cause, who will pay. Venture creation on platform: one venture per team.
-02:00 Track 3 Ethiopian AI Institute - Anchored in Ethiopian AI Institute in Addis Ababa. 3-month instructor-facilitated virtual programme covering intermediate to advanced AI. Builds directly on MIT coursework. Selected participants advance to in-person bootcamp.
-02:30 How It Connects - Cohort 1 starts with 250 solutions. One person registered for MIT (completed within 1 month). Wadhwani runs concurrently (at least one member must complete). Teams on track proceed to Ethiopian AI Institute. In late November 2026, the 50 strongest solutions are selected for the in-person Addis Ababa bootcamp (opening Dec 1, 2026; 1 person per team). Solutions not selected considered for second bootcamp in Feb 2027.
-03:00 Contacts - Official program email: unipods.regional@undp.org. Main program coordinator/admin: Diane (+250 783 188 655). Leadership: Gift Ntuli, Jeovaire Umukundwa, Munira."""
+00:30 UniPods - Makerspaces located in public universities across Africa providing technical support from ideation through prototyping, testing and market access. Currently 23 UniPods across 21 countries, with five more expected by December 2026. In-country UniPods are reaching out to cohort participants to provide local support.
+01:00 Track 1 MIT Foundational AI - Massachusetts Institute of Technology (MIT) covers introduction to AI, Python coding, data analytics, sustainable energy, transportation, medicine, entrepreneurship. Self-paced, 100% covered via fee waiver code (normally $900, no coupon or fee required if accessed via direct invitation link). Enrolment via individual link sent to applicant email. Dashboard access required (click Dashboard in top right, NOT Home). Expected completion: 18 October 2026. 16 foundational modules are compulsory; vertical modules are optional. The applicant who applied is on the certificate, but login credentials can be shared with team members so everyone learns. Contact: uaisupport@mit.edu.
+01:30 Track 2 Wadhwani Ignite Entrepreneurship - 14-week experiential venture building curriculum by Wadhwani Foundation. Instructor-led by Charles Bolton. Tuesdays 3:00 PM CAT (live class), Thursdays 3:00 PM CAT (live coaching & Q&A). Platform: https://web.nen.wfglobal.org/en/login?mode=createAccount&source=student. Venture creation on platform: only ONE person per team clicks 'Create my venture', fills in business details, then uses 'Add member' to add teammates (maximum 5 members per team). Module 1 Problem Statement: max 350 characters, customer-focused, root cause, who will pay.
+02:00 Track 3 Ethiopian AI Institute - Anchored in Ethiopian AI Institute in Addis Ababa. 3-month instructor-facilitated virtual programme covering intermediate to advanced AI. Builds directly on MIT coursework. Needs Assessment Workshop: Wednesday, 23 September 2026, from 10:00 AM to 11:30 AM CAT / East Africa Time 11:00 AM on Microsoft Teams: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjgxNmY4NGItZTZlMi00OTNmLTk2YzEtMjg0ZTdmYWJjM2Q4%40thread.v2/0?context=%7b%22Tid%22%3a%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2c%22Oid%22%3a%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7d
+02:30 How It Connects - Cohort 1 starts with 250 solutions. One person registered for MIT (completed by 18 October 2026). Wadhwani runs concurrently (at least one member must complete). Teams on track proceed to Ethiopian AI Institute. In late November 2026 (week of 23 Nov), the 50 strongest solutions are selected for the in-person Addis Ababa bootcamp (opening Dec 1, 2026; 1 person per team). Solutions not selected considered for second bootcamp in Feb 2027.
+03:00 Certificates & Recommendation Letters - On 21 September 2026, Gift Ntuli announced that after consultation with UNDP, participants who complete the programme will receive official certificates rather than recommendation letters. Teams should identify specific potential partners in needs assessments, and in-country UniPods will connect them.
+03:30 Contacts - Official program email: unipods.regional@undp.org. Main program coordinator/admin: Diane (+250 783 188 655). Leadership: Gift Ntuli, Jeovaire Umukundwa, Munira."""
 
-HACKATHON_CONTENT = """00:00 Hackathon Overview - UniPods Chatbot Hackathon for METI UniPods AI Innovation Programme Cohort 1. $5,000 cash prize for the winning team.
+HACKATHON_CONTENT = """00:00 Hackathon Overview - UniPods Chatbot Hackathon for METI UniPods AI Innovation Programme Cohort 1. $5,000 cash prize for ONE winning team, chosen by vote of the whole cohort.
 00:15 The Problem - Chat volume across cohort is very high; participants miss critical announcements and repeatedly ask already answered questions. Members miss live sessions and cannot watch all recordings.
 00:30 The Challenge - Build a working community memory chatbot that ingests group discussions, announcements, and call recordings, and directly answers member queries with evidence.
 00:45 Deliverables - A working chatbot (not just slides or prototype), public or repository access to source code, and concise setup/maintenance documentation. Platform can be WhatsApp, Telegram, or Web.
-01:00 Team Rules - Maximum 5 members per team. Must include at least one woman. Members cannot all be from the same country; up to 2 members from the same country are allowed.
-01:15 Timeline & Submission - Team declarations due Sept 17, 2026 by email to unipods.regional@undp.org (Subject: UniPods Hackathon – Team Declaration). Hackathon build period runs Sept 18 to Sept 24, 2026.
-01:30 Testing & Deployment - Teams must notify Diane before deployment; bots are tested rotationally in the community (e.g., Shadrak's bot tested Sept 18-19, AskBack AI Bot scheduled Sept 28). Bot names must follow format: [TEAMNAME] BOT (e.g., SPARK BOT). Judging is conducted by a vote of the full cohort."""
+01:00 Team Rules - Maximum 5 members per team. Must include at least one woman. Members cannot all be from the same country; up to 2 members from the same country are allowed (passed by group poll 41-5).
+01:15 Timeline & Submission - Team declarations due Sept 17, 2026 by email to unipods.regional@undp.org (Subject: UniPods Hackathon – Team Declaration). Late declarations are accepted with Diane's confirmation. Hackathon build period runs Sept 18 to Sept 24, 2026.
+01:30 Testing & Deployment - Teams must notify Diane before deployment; bots are tested rotationally in the community (one bot at a time in the group). Bot testing schedule booked through 3 October. Bot names must follow format: [TEAMNAME] BOT (e.g., SPARK BOT, JYMNS BOT, NEXUS BOT). When a team's testing slot finishes, the bot must disconnect to let the next bot test. Judging is conducted by a vote of the full cohort for the $5,000 prize."""
 
-COHORT_KNOWLEDGE = """00:00 Important Recordings - All official session recordings:
+COHORT_KNOWLEDGE = """00:00 Important Recordings & Links - All official session recordings and meeting links:
 00:10 MIT Recording - MIT Universal AI Welcome & Onboarding (16 Sept 2026): https://drive.google.com/file/d/1E5RrwULX8zSjwxHFSxiQzCTtp20ulYQ8/view
 00:20 Wadhwani Module 0 - Welcome & Module 0 (10 Sept 2026): https://youtu.be/yVji4ZQECVw
 00:30 Wadhwani Module 1 - Class Session (15 Sept 2026): https://youtu.be/6q4uPBO_sDc
 00:40 Wadhwani Coaching - Problem Statement Q&A (17 Sept 2026): https://youtu.be/-6G7LXiu47o
-01:00 Open Hours - Weekly Open Hours: Mondays with Gift Ntuli at 3:00 PM CAT, Wednesdays with Diane at 3:00 PM CAT. Teams link: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjlkNWYyMjYtMGNhMi00NDM1LTlkNmYtOTZhYTU2MDU4MDc2%40thread.v2/0?context=%7B%22Tid%22%3A%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2C%22Oid%22%3A%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7D
-01:20 UN Video Opportunity - 5-minute showcase video for UN General Assembly (Sept 20, 2026 in New York). Deadline was Friday Sept 18 at 2:00 PM CAT. Submission: Country_SolutionName_YourName to unipods.regional@undp.org.
-01:40 Team AskBack & Other Teams - Teams formed during cohort: Team AskBack (Onalenna - Botswana, Liane - Madagascar, Hassanat - Nigeria, Isaac - Nigeria, Adolphe - Rwanda). Team JOTDS (Shema Owen - Rwanda, Joel - Rwanda, Deborah - Rwanda, Reitumetse - Lesotho, Kgosi - Botswana). Other teams: EcoSync, Swift Agents, Wise-Bot, PodPal BOT."""
+00:50 Wadhwani Live Sessions - Teams link: https://teams.microsoft.com/meet/419860837373470?p=jYchWkDZnC4etsclnK (Meeting ID: 419 860 837 373 470, Passcode: g2Z7gc7Q)
+01:00 Open Hours - Weekly Open Hours: Mondays with Gift Ntuli at 3:00 PM CAT, Wednesdays with Diane at 3:00 PM CAT (twice a month / alternating weeks). Teams link: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjlkNWYyMjYtMGNhMi00NDM1LTlkNmYtOTZhYTU2MDU4MDc2%40thread.v2/0?context=%7B%22Tid%22%3A%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2C%22Oid%22%3A%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7D
+01:15 Needs Assessment Workshop - Wednesday, 23 September 2026, 10:00 AM to 11:30 AM CAT with Ethiopian AI Institute: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjgxNmY4NGItZTZlMi00OTNmLTk2YzEtMjg0ZTdmYWJjM2Q4%40thread.v2/0?context=%7b%22Tid%22%3a%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2c%22Oid%22%3a%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7d
+01:30 UN Video Opportunity - 5-minute showcase video for UN General Assembly (Sept 20, 2026 in New York). Deadline was Friday Sept 18 at 2:00 PM CAT (passed). Submission was Country_SolutionName_YourName to unipods.regional@undp.org.
+01:45 Team Registration Sheet - Google Sheet for solutions & teams: https://docs.google.com/spreadsheets/d/15sAD53FA9LZXJ7EzOIzWLALTViaPz2_e/edit
+02:00 Teams Formed - AskBack AI Bot, JOTDS (The Palm Solutions - Shema Owen, Joel, Deborah, Reitumetse, Kgosi), EcoSync, Swift Agents, Wise-Bot, PodPal BOT, UniConnect."""
 
-# Real team chats
+# Real internal team chats
 TEAM_CHATS = [
     {"author": "Shema Owen", "author_id": "+250782972679", "time": "2026-09-16T20:01:53+02:00", "text": "Hello @all once again every one is free to share their ideas on the task. Thank you"},
     {"author": "Kgosi", "author_id": "kgosi_botswana", "time": "2026-09-16T20:02:36+02:00", "text": "Hi. Kgosi. Botswana. Business Development and Project Management"},
@@ -72,7 +80,7 @@ TEAM_CHATS = [
     {"author": "Shema Owen", "author_id": "+250782972679", "time": "2026-09-19T03:43:01+02:00", "text": "Don't mind the deleted messages, I was testing. You can check on GitHub there are updates!"}
 ]
 
-# Curated high-signal announcements from the main cohort group
+# Curated high-signal announcements from the cohort community
 COHORT_MESSAGES = [
     {"author": "Diane (Coordinator)", "time": "2026-09-04T13:22:17+02:00", "text": "Welcome to the UniPods AI Programme group! Share your excitement on social media and tag METI, timbuktoo and UNDP."},
     {"author": "Gift Ntuli (Lead)", "time": "2026-09-05T19:56:09+02:00", "text": "Capital funding will be accessible at the end of the program for businesses in the cohort."},
@@ -88,21 +96,27 @@ COHORT_MESSAGES = [
     {"author": "Diane (Coordinator)", "time": "2026-09-18T13:16:54+02:00", "text": "When creating your bot, name it using your team name followed by 'BOT' (e.g. SPARK BOT). Teams must inform Diane before deploying to group for rotational testing."},
     {"author": "Shadrak (Participant)", "time": "2026-09-18T14:13:37+02:00", "text": "Tested first bot (meti_bot). Tested on Sept 18-19. Other teams will be assigned testing slots by Diane (e.g. AskBack AI Bot on Sept 28)."},
     {"author": "Diane (Coordinator)", "time": "2026-09-19T19:36:32+02:00", "text": "Diane is the main METI program coordinator and admin (+250 783 188 655). She coordinates announcements, testing schedules, and forms."},
-    {"author": "Participant Query & Answer", "time": "2026-09-19T20:30:00+02:00", "text": "All meeting recordings: MIT Onboarding (https://drive.google.com/file/d/1E5RrwULX8zSjwxHFSxiQzCTtp20ulYQ8/view), Wadhwani Module 0 (https://youtu.be/yVji4ZQECVw), Wadhwani Module 1 (https://youtu.be/6q4uPBO_sDc), Wadhwani Coaching (https://youtu.be/-6G7LXiu47o)."}
+    {"author": "Participant Query & Answer", "time": "2026-09-19T20:30:00+02:00", "text": "All meeting recordings: MIT Onboarding (https://drive.google.com/file/d/1E5RrwULX8zSjwxHFSxiQzCTtp20ulYQ8/view), Wadhwani Module 0 (https://youtu.be/yVji4ZQECVw), Wadhwani Module 1 (https://youtu.be/6q4uPBO_sDc), Wadhwani Coaching (https://youtu.be/-6G7LXiu47o)."},
+    {"author": "Gift Ntuli (Lead)", "time": "2026-09-21T12:10:53+02:00", "text": "After consultation with UNDP we have been advised that rather than recommendation letters those that complete the program will get certificates. In needs assessments identify specific partners, and in-country UniPods will connect you."},
+    {"author": "Diane (Coordinator)", "time": "2026-09-21T14:20:01+02:00", "text": "Open Hours are twice in a month, skipping only one week. The next Open Hour is Wednesday September 30 at 3:00 PM CAT."},
+    {"author": "Diane (Coordinator)", "time": "2026-09-21T17:07:51+02:00", "text": "METI AI Innovation Programme Cohort 1: Needs Assessment Workshop with the Ethiopian AI Institute team on Wednesday, 23 September 2026, from 10:00 AM to 11:30 AM CAT (11:00 AM EAT). Link: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjgxNmY4NGItZTZlMi00OTNmLTk2YzEtMjg0ZTdmYWJjM2Q4%40thread.v2/0?context=%7b%22Tid%22%3a%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2c%22Oid%22%3a%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7d"},
+    {"author": "Diane (Coordinator)", "time": "2026-09-21T17:20:37+02:00", "text": "Confirmed: The Needs Assessment Workshop is 10:00 AM CAT on Wednesday 23 September."},
+    {"author": "Diane (Coordinator)", "time": "2026-09-20T18:38:58+02:00", "text": "Bot testing slots are booked all the way until 3 October. Please note scores as you test; whole group will vote. When your day is done please disconnect to let the next bot test."}
 ]
 
 async def master_ingest():
     await init_db()
     async with SessionLocal() as db:
-        print("[1/5] Clearing outdated data...")
+        print("[1/6] Clearing outdated database tables...")
         await db.execute(delete(Chunk))
         await db.execute(delete(Message))
         await db.execute(delete(Decision))
         await db.execute(delete(ActionItem))
         await db.execute(delete(Meeting))
         await db.commit()
+        print("  -> Tables cleared.")
 
-        print("[2/5] Ingesting Official METI Information Pack...")
+        print("[2/6] Ingesting Official METI Information Pack...")
         m1 = await ingest_transcript_file(
             db,
             title="METI UniPods AI Innovation Programme Information Pack",
@@ -111,7 +125,7 @@ async def master_ingest():
         )
         print(f"  -> Ingested Info Pack (Meeting id={m1.id})")
 
-        print("[3/5] Ingesting Official Hackathon Guidelines & Rules...")
+        print("[3/6] Ingesting Official Hackathon Guidelines & Rules...")
         m2 = await ingest_transcript_file(
             db,
             title="UniPods Hackathon Guidelines & Deliverables",
@@ -120,16 +134,31 @@ async def master_ingest():
         )
         print(f"  -> Ingested Hackathon Guidelines (Meeting id={m2.id})")
 
-        print("[4/5] Ingesting Recordings, Open Hours & Community Knowledge...")
+        print("[4/6] Ingesting Master Links, Schedules & Community Knowledge...")
         m3 = await ingest_transcript_file(
             db,
             title="UniPods Cohort Master Knowledge & Links",
             content=COHORT_KNOWLEDGE,
             filename="Cohort_Knowledge.txt"
         )
-        print(f"  -> Ingested Master Links & Schedule (Meeting id={m3.id})")
+        print(f"  -> Ingested Master Knowledge & Links (Meeting id={m3.id})")
 
-        print("[5/5] Ingesting Team Chats & Cohort Community History...")
+        print("[5/6] Ingesting Full WhatsApp Export Chat & Document Chunks...")
+        export_dir = Path("../WhatsApp Chat - UniPods METI AI Program 2026 Cohort")
+        chat_path = export_dir / "_chat.txt"
+        if chat_path.exists():
+            chat_messages = parse_chat(chat_path, export_dir)
+            print(f"  -> Parsed {len(chat_messages)} real messages from _chat.txt")
+            shares = attachment_shares(chat_messages)
+            doc_messages = parse_documents(export_dir, shares)
+            img_messages = parse_image_attachments(export_dir, shares)
+            print(f"  -> Extracted {len(doc_messages)} document chunks, {len(img_messages)} images.")
+            stored_export = await ingest_messages(db, chat_messages + doc_messages + img_messages)
+            print(f"  -> Ingested {len(stored_export)} total export messages/chunks!")
+        else:
+            print(f"  -> Warning: {chat_path} not found.")
+
+        print("[6/6] Ingesting Team Chats & Cohort Announcements...")
         msgs = []
         for i, c in enumerate(TEAM_CHATS):
             msgs.append(NormalizedMessage(
@@ -150,7 +179,7 @@ async def master_ingest():
                 source_type=SourceType.CHAT,
                 external_id=f"cohort-chat-{i+1}",
                 conversation_id="UNIPODS COHORT 1",
-                author_id="cohort_member",
+                author_id="cohort_announcement",
                 author_name=c["author"],
                 text=c["text"],
                 timestamp=datetime.fromisoformat(c["time"]).isoformat(),
@@ -158,22 +187,22 @@ async def master_ingest():
             ))
 
         stored = await ingest_messages(db, msgs)
-        print(f"  -> Ingested {len(stored)} messages across team and cohort!")
+        print(f"  -> Ingested {len(stored)} curated messages across team and cohort!")
 
         # Add structured Decisions
         db.add(Decision(
-            decision="Team Name: JOTDS",
-            reason="Formed for the METI UniPods AI Innovation Programme Hackathon",
-            decided_at=datetime(2026, 9, 16, 21, 0, tzinfo=timezone.utc),
-            context="UniPods Hackathon Cohort 1",
-            authors=["Shema Owen", "Joel", "Deborah", "Reitumetse", "Kgosi"]
+            decision="Official Certificates Replace Recommendation Letters",
+            reason="Confirmed by Gift Ntuli following consultation with UNDP; in-country UniPods will match teams with identified partners",
+            decided_at=datetime(2026, 9, 21, 12, 10, tzinfo=timezone.utc),
+            context="Programme certification and partnership linkages",
+            authors=["Gift Ntuli", "UNDP"]
         ))
         db.add(Decision(
-            decision="GitHub for Code Collaboration",
-            reason="Team code repository for chatbot implementation and PR reviews",
-            decided_at=datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc),
-            context="Chatbot development setup",
-            authors=["Shema Owen", "Joel"]
+            decision="Needs Assessment Workshop Scheduled for Wednesday 23 September 2026, 10:00 AM CAT",
+            reason="Organized with Ethiopian AI Institute to map compute, technical, and institutional needs",
+            decided_at=datetime(2026, 9, 21, 17, 20, tzinfo=timezone.utc),
+            context="Ethiopian AI Institute curriculum and support mapping",
+            authors=["Diane", "Ethiopian AI Institute"]
         ))
         db.add(Decision(
             decision="Hackathon Prize: $5,000 for the single winning team decided by cohort vote",
@@ -182,27 +211,39 @@ async def master_ingest():
             context="Hackathon incentive and judging",
             authors=["Gift Ntuli", "Diane"]
         ))
+        db.add(Decision(
+            decision="Team Name: JOTDS (The Palm Solutions)",
+            reason="Formed for the METI UniPods AI Innovation Programme Hackathon",
+            decided_at=datetime(2026, 9, 16, 21, 0, tzinfo=timezone.utc),
+            context="UniPods Hackathon Cohort 1",
+            authors=["Shema Owen", "Joel", "Deborah", "Reitumetse", "Kgosi"]
+        ))
 
         # Add Action Items
         db.add(ActionItem(
-            task="Build and test the WhatsApp Community Memory Chatbot with PostgreSQL RAG",
-            assignee_name="Shema Owen & Joel",
+            task="Attend Needs Assessment Workshop with Ethiopian AI Institute on Wednesday 23 Sep at 10:00 AM CAT",
+            assignee_name="All Cohort Founders",
+            due_at=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
+        ))
+        db.add(ActionItem(
+            task="Submit Wadhwani Module 1 Problem Statement (max 350 chars) before Tuesday 22 Sep 3:00 PM CAT class",
+            assignee_name="All Venture Founders",
+            due_at=datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
+        ))
+        db.add(ActionItem(
+            task="Submit Chatbot Hackathon solution (working bot + repo access + setup notes) by Thursday 24 Sep 2026",
+            assignee_name="Hackathon Teams",
             due_at=datetime(2026, 9, 24, 23, 59, tzinfo=timezone.utc)
         ))
         db.add(ActionItem(
             task="Complete MIT Universal AI foundational modules (16 modules) by October 18, 2026",
-            assignee_name="Team Lead / Registered Member",
+            assignee_name="Team Lead / Enrolled Member",
             due_at=datetime(2026, 10, 18, 23, 59, tzinfo=timezone.utc)
-        ))
-        db.add(ActionItem(
-            task="Submit Wadhwani Module 1 Problem Statement (max 350 chars) before Tuesday class",
-            assignee_name="All Venture Founders",
-            due_at=datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
         ))
         await db.commit()
         print("  -> Structured decisions and action items saved.")
 
-        print("\n=== Comprehensive Ingestion Finished Successfully! ===")
+        print("\n=== Master Comprehensive Ingestion Finished Successfully! ===")
 
 if __name__ == "__main__":
     asyncio.run(master_ingest())

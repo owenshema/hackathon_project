@@ -36,7 +36,7 @@ async def main() -> None:
                 json=payload,
             )
             print(f"[{method.upper()}] {response.status_code}: {response.text[:500]}")
-            if response.status_code in (200, 201):
+            if response.status_code in (200, 201, 202):
                 return
 
     raise SystemExit(1)

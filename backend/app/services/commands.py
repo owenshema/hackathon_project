@@ -1,5 +1,6 @@
 """Command parser for /ask /catchup /decisions /tasks /changed /meeting /find."""
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,6 +38,11 @@ def parse_command(text: str) -> ParsedCommand:
     # Soft aliases (natural language)
     lower = raw.lower()
     if lower.startswith("catch me up") or "what did i miss" in lower:
+        return ParsedCommand(command="catchup", query=raw, is_command=True)
+    if re.search(
+        r"\b(what was agreed|what we agreed|summary of (?:what|the)|what happened in (?:the )?group|what was said)\b",
+        lower,
+    ):
         return ParsedCommand(command="catchup", query=raw, is_command=True)
     if lower.startswith("what changed"):
         return ParsedCommand(command="changed", query=raw, is_command=True)

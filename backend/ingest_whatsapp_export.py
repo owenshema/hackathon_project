@@ -27,7 +27,9 @@ from app.services.ingestion import ingest_messages
 CAT = timezone(timedelta(hours=2))
 MESSAGE_RE = re.compile(
     r"^\u200e?\[(?P<date>\d{1,2}/\d{1,2}/\d{2,4}), "
-    r"(?P<time>\d{1,2}:\d{2}:\d{2})\u202f?(?P<ampm>AM|PM)\] "
+    # WhatsApp exports vary between regular spaces, narrow no-break spaces,
+    # and no space before AM/PM depending on platform and locale.
+    r"(?P<time>\d{1,2}:\d{2}:\d{2})[\s\u202f]*(?P<ampm>AM|PM)\] "
     r"(?P<author>.*?): (?P<text>.*)$"
 )
 ATTACHED_RE = re.compile(r"<attached:\s*(?P<filename>[^>]+)>")

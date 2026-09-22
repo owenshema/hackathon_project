@@ -88,3 +88,23 @@ async def clear_mock_data(db: AsyncSession = Depends(get_db)):
         "deleted_messages": deleted_messages,
         "deleted_chunks": deleted_chunks,
     }
+
+
+@router.post("/ingest/sync")
+async def sync_whatsapp_messages(db: AsyncSession = Depends(get_db)):
+    """
+    Pull the latest WhatsApp messages from Wassenger and ingest any that
+    are not yet in the database, sorted chronologically (oldest → newest).
+    Useful to call manually any time to bring memory fully up to date.
+    """
+    from app.services.sync import sync_recent_whatsapp_messages
+    added = await sync_recent_whatsapp_messages(db, limit=200)
+    return {
+        "status": "ok",
+        "new_messages_ingested": added,
+        "message": (
+            f"Sync complete. {added} new message(s) added to memory."
+            if added else
+            "Memory is already fully up-to-date. No new messages found."
+        ),
+    }

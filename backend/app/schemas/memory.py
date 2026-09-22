@@ -79,6 +79,8 @@ class MemoryAnswer(BaseModel):
     reason: Optional[str] = None
     evidence: list[EvidenceItem] = Field(default_factory=list)
     command: Optional[str] = None
+    deliver_voice_recap: bool = False
+    voice_recap_script: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -98,6 +100,11 @@ class CatchUpRequest(BaseModel):
 
 
 class CatchUpResponse(BaseModel):
+    # Exact recent messages, oldest to newest.  This is deliberately separate
+    # from the optional summary sections so a catch-up never hides the actual
+    # conversation behind stale extracted decisions.
+    recent_messages: list[str] = Field(default_factory=list)
+    summary: str = ""
     important: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     discussions: list[str] = Field(default_factory=list)

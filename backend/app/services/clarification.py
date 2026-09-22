@@ -30,6 +30,8 @@ CLARIFY_PATTERNS = [
     r"\bhave we (agreed|decided|chosen)\b",
     r"\balready (discussed|decided|said|agreed)\b",
     r"\bcatch me up\b",
+    r"\bvoice\s*(?:recap|note|message)\b",
+    r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\b",
     r"\bwhat did i miss\b",
     r"\banyone know\b",
     r"\bdoes anyone (know|remember)\b",

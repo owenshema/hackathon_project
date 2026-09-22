@@ -4,9 +4,9 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Message
+from app.db.models import Chunk, Message
 from app.schemas.memory import NormalizedMessage
-from app.services.embeddings import embed_and_store_message
+from app.services.embeddings import embed_and_store_message, embed_texts
 
 
 async def ingest_messages(
@@ -38,9 +38,36 @@ async def ingest_messages(
         db.add(row)
         stored.append(row)
 
-    await db.commit()
+    await db.flush()
+    chunks: list[Chunk] = []
     for row in stored:
-        await db.refresh(row)
-        await embed_and_store_message(db, row)
+        media_note = ""
+        if row.media_url:
+            media_label = row.media_mime or row.source_type or "media"
+            media_note = f"\n[Attached media: {media_label}. URL/id available to the system.]"
 
+        vectors = embed_texts([row.text])
+        chunks.append(
+            Chunk(
+                message_id=row.id,
+                content=f"{row.text}{media_note}",
+                embedding=vectors[0] if vectors else None,
+                platform=row.platform,
+                author_name=row.author_name,
+                timestamp=row.timestamp,
+                meeting_offset_sec=row.meeting_offset_sec,
+                meta={
+                    "source_type": row.source_type,
+                    "external_id": row.external_id,
+                    "conversation_id": row.conversation_id,
+                    "author_id": row.author_id,
+                    "media_url": row.media_url,
+                    "media_mime": row.media_mime,
+                    "has_media": bool(row.media_url),
+                },
+            )
+        )
+    if chunks:
+        db.add_all(chunks)
+    await db.commit()
     return stored

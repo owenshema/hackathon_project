@@ -12,12 +12,26 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.db.session import init_db
+from app.db.session import init_db, SessionLocal
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_db()
+
+    # On every startup: pull the latest WhatsApp messages from Wassenger
+    # and ingest any that are not yet in the DB, in chronological order.
+    try:
+        from app.services.sync import sync_recent_whatsapp_messages
+        async with SessionLocal() as db:
+            added = await sync_recent_whatsapp_messages(db, limit=200)
+            if added:
+                print(f"[Startup] Self-sync complete: {added} new messages added to memory.")
+            else:
+                print("[Startup] Self-sync complete: Memory is already up-to-date.")
+    except Exception as exc:
+        print(f"[Startup] Warning: startup self-sync failed (non-fatal): {exc}")
+
     yield
 
 

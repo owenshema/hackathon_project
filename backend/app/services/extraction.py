@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,47 @@ Return JSON with keys:
   action_items: [{task, assignee}]
 Only use facts present in the text. Empty arrays are fine.
 """
+
+DAILY_CATCHUP_SYSTEM = """You write a clear, useful daily catch-up for a WhatsApp group.
+
+Use only facts in the supplied messages from today. Reason across the full
+conversation: connect related messages, distinguish questions from answers,
+and identify the actual progress, decisions, blockers, deadlines, and next
+steps. Do not invent details or treat an unanswered question as a decision.
+
+Return JSON only with these keys:
+{
+  "summary": "A concise 2–5 sentence account of what has happened today.",
+  "important": ["Key announcements, deadlines, or blockers"],
+  "decisions": ["Decisions that were actually made or confirmed"],
+  "discussions": ["The most important ongoing discussion points"],
+  "action_items": ["Specific next steps and owners, only where stated"]
+}
+
+Every array may be empty. Keep the entire response under 180 words and make
+it useful to someone who has missed the day's conversation."""
+
+# CAT is UTC+2 year-round. A fixed offset avoids requiring the optional IANA
+# timezone database on Windows Python installations.
+GROUP_TIMEZONE = timezone(timedelta(hours=2), name="CAT")
+
+
+def _message_transcript(messages: list[Message]) -> str:
+    lines: list[str] = []
+    for message in messages:
+        text = " ".join((message.text or "").split())
+        if not text:
+            continue
+        author = message.author_name or message.author_id or "Someone"
+        timestamp = message.timestamp.astimezone(GROUP_TIMEZONE).strftime("%H:%M") if message.timestamp else ""
+        lines.append(f"[{timestamp}] {author}: {text}")
+    return "\n".join(lines)
+
+
+def _as_lines(value: object, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()][:limit]
 
 
 async def extract_from_texts(
@@ -91,81 +132,46 @@ async def catch_me_up(
     *,
     user_name: str | None = None,
     since: datetime | None = None,
+    conversation_id: str | None = None,
+    exclude_message_ids: set | None = None,
 ) -> CatchUpResponse:
     """
-    Build a catch-up summary from recent group activity.
-    Always pulls the last 50 messages + stored decisions + action items
-    so the user always gets a meaningful summary regardless of last_seen_at.
+    Summarize all conversation from the start of today through this request.
+
+    The requested command message is excluded when supplied by the webhook
+    handler. Time is interpreted in CAT (Africa/Johannesburg), the programme's
+    operating timezone.
     """
-    from app.db.models import ActionItem as ActionItemModel, Decision as DecisionModel
-
-    # Pull recent messages (always last 50, regardless of last_seen timestamp)
-    result = await db.execute(
-        select(Message).order_by(Message.timestamp.desc()).limit(50)
+    now = datetime.now(GROUP_TIMEZONE)
+    day_start_utc = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    stmt = (
+        select(Message)
+        .where(Message.timestamp >= day_start_utc)
+        .order_by(Message.timestamp.asc())
     )
-    messages = list(reversed(result.scalars().all()))  # chronological order
-
-    # Pull stored decisions (last 5)
-    dec_result = await db.execute(
-        select(DecisionModel).order_by(DecisionModel.created_at.desc()).limit(5)
-    )
-    decisions_db = list(dec_result.scalars().all())
-
-    # Pull stored action items (last 5)
-    act_result = await db.execute(
-        select(ActionItemModel).order_by(ActionItemModel.created_at.desc()).limit(5)
-    )
-    action_items_db = list(act_result.scalars().all())
-
-    # Build sections directly from DB — no LLM needed
-    important: list[str] = []
-    discussions: list[str] = []
-
-    # Scan messages for important content (announcements, deadlines, links, tasks)
-    IMPORTANT_KEYWORDS = (
-        "deadline", "submit", "submission", "important", "urgent", "meeting",
-        "join", "google meet", "link", "call", "reminder", "don't forget",
-        "unipod", "prize", "hackathon",
-    )
-    seen_texts: set[str] = set()
-    for m in messages:
-        text = (m.text or "").strip()
-        if not text or len(text) < 10:
-            continue
-        key = text[:60].lower()
-        if key in seen_texts:
-            continue
-        seen_texts.add(key)
-        author = m.author_name or m.author_id or "Someone"
-        line = f"{author}: {text[:120]}"
-        if any(kw in text.lower() for kw in IMPORTANT_KEYWORDS):
-            important.append(line)
-        else:
-            discussions.append(line)
-
-    # Cap sections
-    important = important[:5]
-    discussions = discussions[:4]
-
-    # Decisions from DB
-    decision_lines = [
-        d.decision + (f" ({d.reason})" if d.reason else "")
-        for d in decisions_db
-    ]
-
-    # Action items from DB
-    action_lines = [
-        (f"{a.assignee_name}: {a.task}" if a.assignee_name else a.task)
-        for a in action_items_db
-    ]
-
-    # If we have messages but no structured data yet, build from messages directly
-    if not decision_lines and not action_lines and not important and not discussions:
-        if messages:
-            discussions = [
-                f"{(m.author_name or m.author_id or 'Someone')}: {(m.text or '')[:100]}"
-                for m in messages[-5:]
-            ]
+    if conversation_id:
+        stmt = stmt.where(Message.conversation_id == conversation_id)
+    result = await db.execute(stmt)
+    excluded = exclude_message_ids or set()
+    messages = [m for m in result.scalars().all() if m.id not in excluded]
+    transcript = _message_transcript(messages)
+    if transcript:
+        data = await generate_json(
+            f"Today is {now.strftime('%A, %d %B %Y')} (CAT). "
+            f"Summarize the group activity from midnight through {now.strftime('%H:%M')} CAT.\n\n"
+            f"Messages:\n{transcript}",
+            DAILY_CATCHUP_SYSTEM,
+        )
+        summary = str(data.get("summary") or data.get("answer") or "").strip()
+        if not summary:
+            summary = "Today's group conversation has been recorded, but I could not produce a reliable summary yet."
+        important = _as_lines(data.get("important"), 5)
+        decisions = _as_lines(data.get("decisions"), 5)
+        discussions = _as_lines(data.get("discussions"), 4)
+        action_items = _as_lines(data.get("action_items"), 5)
+    else:
+        summary = "There have not been any group messages yet today."
+        important = decisions = discussions = action_items = []
 
     # Update last seen
     activity = await db.scalar(
@@ -185,13 +191,14 @@ async def catch_me_up(
         )
     await db.commit()
 
-    evidence: list[EvidenceItem] = [evidence_from_message(m) for m in messages[-3:]]
+    evidence: list[EvidenceItem] = [evidence_from_message(m) for m in messages[-5:]]
 
     return CatchUpResponse(
+        summary=summary,
         important=important,
-        decisions=decision_lines,
+        decisions=decisions,
         discussions=discussions,
-        action_items=action_lines,
+        action_items=action_items,
         evidence=evidence,
     )
 

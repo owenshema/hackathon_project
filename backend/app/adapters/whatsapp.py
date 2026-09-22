@@ -413,14 +413,18 @@ class WhatsAppAdapter(PlatformAdapter):
 
             else:
                 data = upload.json()
-            file_id = (
-                data.get("id")
-                or data.get("_id")
-                or data.get("file")
-                or (data.get("data") or {}).get("id")
-            )
+
+            file_id = None
             if isinstance(data, list) and data:
-                file_id = data[0].get("id") or data[0].get("_id") or data[0].get("file")
+                first = data[0] if isinstance(data[0], dict) else {}
+                file_id = first.get("id") or first.get("_id") or first.get("file")
+            elif isinstance(data, dict):
+                file_id = (
+                    data.get("id")
+                    or data.get("_id")
+                    or data.get("file")
+                    or (data.get("data") or {}).get("id")
+                )
             if not file_id:
                 return {
                     "ok": False,

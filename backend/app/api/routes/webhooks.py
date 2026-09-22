@@ -17,6 +17,8 @@ from app.services.clarification import (
     is_important_unanswered_question,
     needs_clarification,
 )
+from app.services.voice_recap import synthesize_voice_note
+from app.services.group_recap import maybe_send_group_recaps
 from app.services.ingestion import ingest_messages
 from app.services.response_router import handle_user_message
 
@@ -152,6 +154,8 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
             stored = await ingest_messages(db, candidates)
             stored_by_external = {m.external_id: m for m in stored}
 
+            await maybe_send_group_recaps(db, adapter, candidates)
+
             for msg in candidates:
                 # Skip bot's own echoed outbound messages
                 author_digits = _normalize_phone(msg.author_id)
@@ -161,7 +165,7 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                 is_group = bool((msg.metadata or {}).get("is_group"))
                 text, was_mentioned = check_and_strip_bot_mention(
                     msg.text,
-                    bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe"],
+                    bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe", "meti", "meti_bot", "Meti", "The Palm", "Palm"],
                 )
 
                 if not needs_clarification(text, is_group=is_group, was_mentioned=was_mentioned):
@@ -230,6 +234,36 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                             metadata=msg.metadata,
                         )
                         print(f"[WhatsApp] Reply ok={delivery.get('ok')} mode={delivery.get('mode')}")
+
+                    if (
+                        isinstance(result, MemoryAnswer)
+                        and result.deliver_voice_recap
+                        and result.voice_recap_script
+                    ):
+                        audio_path = await synthesize_voice_note(result.voice_recap_script)
+                        if audio_path:
+                            voice_delivery = await adapter.send_attachment(
+                                conversation_id=msg.conversation_id,
+                                file_path=str(audio_path),
+                                caption="🎙 Voice recap",
+                                display_filename="catch-up-recap.mp3",
+                                reply_to_id=msg.external_id,
+                                metadata=msg.metadata,
+                            )
+                            print(
+                                "[WhatsApp] Voice recap "
+                                f"ok={voice_delivery.get('ok')} mode={voice_delivery.get('mode')}"
+                            )
+                        else:
+                            await adapter.send_reply(
+                                conversation_id=msg.conversation_id,
+                                text=(
+                                    "I couldn't generate the voice note on this server "
+                                    "(TTS unavailable). Your text catch-up above is still valid."
+                                ),
+                                reply_to_id=msg.external_id,
+                                metadata=msg.metadata,
+                            )
                 except Exception as exc:
                     print(f"[WhatsApp] Reply error: {exc}")
         finally:

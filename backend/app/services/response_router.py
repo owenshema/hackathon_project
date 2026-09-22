@@ -9,6 +9,13 @@ from app.schemas.memory import CatchUpResponse, MemoryAnswer, Platform
 from app.services.commands import parse_command
 from app.services.extraction import catch_me_up
 from app.services.rag import answer_question, list_decisions
+from app.services.voice_recap import (
+    VOICE_RECAP_OFFER_WHATSAPP,
+    cache_catchup_script,
+    catchup_to_voice_script,
+    get_cached_catchup_script,
+    is_voice_recap_request,
+)
 
 
 def _author_mention(author: str | None) -> str:
@@ -37,48 +44,37 @@ def _author_mention(author: str | None) -> str:
 
 
 def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
-    """Compact text suitable for WhatsApp / Teams (keep it short for mobile)."""
+    """Clean text suitable for WhatsApp / Teams, matching meti_bot style."""
     mobile = platform in {Platform.WHATSAPP, Platform.TEAMS}
+    if mobile:
+        # Meti_bot delivers direct, clean answers without robotic evidence dumps
+        text = (answer.answer or "").strip()
+        if len(text) > 3500:
+            text = text[:3490] + "…"
+        return text
+
     lines = [answer.answer]
     if answer.decision:
         lines.append(f"\nDecision: {answer.decision}")
-    if answer.reason and not mobile:
+    if answer.reason:
         lines.append(f"Reason: {answer.reason}")
     if answer.evidence:
         lines.append("\nEvidence:")
-        limit = 2 if mobile else 5
-        excerpt_len = 120 if mobile else 180
-        for ev in answer.evidence[:limit]:
-            author = ev.author or "a group member"
-            author_mention = _author_mention(author)
+        for ev in answer.evidence[:5]:
+            author = ev.author or "an official source"
             excerpt = ev.excerpt or ""
-            is_shared_attachment = "shared by " in excerpt.lower() or "shared image" in excerpt.lower()
-
-            # Check if this evidence comes from official docs/guidelines
-            is_doc = any(k in excerpt.lower() for k in ("guideline", "information pack", ".pdf", ".pptx", "hackathon"))
-            if is_doc or is_shared_attachment:
-                lines.append(f"• {author_mention} shared:")
-            elif ev.meeting_offset_display:
-                lines.append(f"• {author_mention} said in session @ {ev.meeting_offset_display}:")
-            elif ev.kind.value == "whatsapp_voice":
-                lines.append(f"• {author_mention} said in a voice note:")
-            else:
-                lines.append(f"• {author_mention} said:")
-            if excerpt:
-                lines.append(f'  "{excerpt[:excerpt_len]}"')
+            lines.append(f"• {author}: \"{excerpt[:180]}\"")
             if ev.replay_url and platform == Platform.WEB:
                 lines.append(f"  Replay: {ev.replay_url}")
-    if answer.confidence == "insufficient":
-        lines.append("\n(Insufficient evidence — I won't guess.)")
-    text = "\n".join(lines)
-    # WhatsApp hard limit safety
-    if mobile and len(text) > 3500:
-        text = text[:3490] + "…"
-    return text
+    return "\n".join(lines)
 
 
-def format_catchup_for_platform(recap: CatchUpResponse) -> str:
+def format_catchup_for_platform(
+    recap: CatchUpResponse, platform: Platform = Platform.WEB
+) -> str:
     sections = []
+    if recap.summary:
+        sections.append("*Today so far*\n" + recap.summary)
     if recap.important:
         sections.append("Important\n" + "\n".join(f"• {x}" for x in recap.important[:5]))
     if recap.decisions:
@@ -93,7 +89,10 @@ def format_catchup_for_platform(recap: CatchUpResponse) -> str:
         )
     if not sections:
         return "Nothing new since you were last active — you're caught up."
-    return "Your Catch Me Up\n\n" + "\n\n".join(sections)
+    body = "*Today's group catch-up*\n\n" + "\n\n".join(sections)
+    if platform == Platform.WHATSAPP:
+        body += VOICE_RECAP_OFFER_WHATSAPP
+    return body
 
 
 async def handle_user_message(
@@ -266,9 +265,48 @@ async def handle_user_message(
     query = parsed.query or text
     fast = platform in {Platform.WHATSAPP, Platform.TEAMS} and settings.platform_fast_mode
 
+    if is_voice_recap_request(text):
+        script = get_cached_catchup_script(user_id, conversation_id)
+        if not script:
+            recap = await catch_me_up(
+                db,
+                user_id,
+                user_name=user_name,
+                conversation_id=conversation_id,
+                exclude_message_ids=exclude_message_ids,
+            )
+            script = catchup_to_voice_script(recap)
+            cache_catchup_script(user_id, conversation_id, script)
+        if not script.strip():
+            empty = MemoryAnswer(
+                answer=(
+                    "I don't have a recent catch-up to read aloud yet. "
+                    "Ask me to *catch you up* first, then tag me for a *voice recap*."
+                ),
+                confidence="high",
+                evidence=[],
+            )
+            return empty, format_answer_for_platform(empty, platform)
+        voice_answer = MemoryAnswer(
+            answer="Sending your voice recap 🎙",
+            confidence="high",
+            evidence=[],
+            deliver_voice_recap=True,
+            voice_recap_script=script,
+        )
+        return voice_answer, format_answer_for_platform(voice_answer, platform)
+
     if cmd == "catchup":
-        recap = await catch_me_up(db, user_id, user_name=user_name)
-        return recap, format_catchup_for_platform(recap)
+        recap = await catch_me_up(
+            db,
+            user_id,
+            user_name=user_name,
+            conversation_id=conversation_id,
+            exclude_message_ids=exclude_message_ids,
+        )
+        script = catchup_to_voice_script(recap)
+        cache_catchup_script(user_id, conversation_id, script)
+        return recap, format_catchup_for_platform(recap, platform)
 
     if cmd == "decisions":
         answer = await list_decisions(db, query)

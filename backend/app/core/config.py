@@ -27,14 +27,19 @@ class Settings(BaseSettings):
 
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_model: str = "google/diffusiongemma-26b-a4b-it"
+    nvidia_model: str = "deepseek-ai/deepseek-v4.1-flash"
 
     # Speed knobs — WhatsApp/Teams need sub-~15s replies
     llm_timeout_seconds: float = 25.0
     llm_max_tokens: int = 400
     llm_retries: int = 1
     use_local_embeddings: bool = False
-    platform_fast_mode: bool = True
+    # Webhooks are acknowledged before processing, so prioritize full evidence
+    # and LLM synthesis over a shallow, keyword-only mobile response.
+    platform_fast_mode: bool = False
+    # Post a WhatsApp group recap after this many ingested messages (0 = off)
+    group_recap_message_interval: int = 20
+    tts_voice: str = "en-US-JennyNeural"
 
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"

@@ -11,36 +11,66 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.group_profiles import is_group_admin, profile_for
 from app.db.models import Chunk, Decision, Message
 from app.schemas.memory import EvidenceItem, MemoryAnswer
 from app.services.embeddings import embed_texts
 from app.services.evidence import evidence_from_chunk, evidence_from_message
 from app.services.llm import generate_json
 
-SYSTEM_PROMPT = """You are UniPods Memory AI — a helpful community memory assistant in a WhatsApp group.
-Your job is to answer questions, clarify decisions, and help team members stay caught up.
+SYSTEM_PROMPT = """You are the official UniPods METI AI Assistant Bot (in this cohort known as our community bot / meti_bot) for the UniPods METI AI Innovation Programme 2026 Cohort (supported by METI, UNDP, and timbuktoo).
 
-Guidelines:
-1. Read all provided Evidence before answering. Treat it like group memory: combine relevant chat messages, documents, meeting notes, voice transcripts, and media descriptions when they are present.
-2. First understand the user's exact question and identify what kind of answer is needed: deadline, rule, meeting link, action item, explanation, person, document, recording, or general summary. Do not answer a different nearby topic.
-3. Answer directly, naturally, and accurately based on the provided Evidence. If evidence is insufficient to answer the question, state that clearly (set confidence to "insufficient").
-4. For official programme facts, deadlines, eligibility, submission, testing, team rules, prize, links, and required actions, rely on leaders/admins (@Diane, @Gift, @Munira, @Jeovaire, @Charles) or official attached documents. Participant guesses are not enough.
-5. Be honest about media. If an audio/image/file is only shown as pending transcription or as an attachment without extracted content, say you can see that media exists but cannot use its contents yet.
-6. Keep the answer warm, human, and concise for mobile WhatsApp reading. Use "I found..." / "What matters is..." only when that sounds natural.
-7. Use the chat's best clarification style: short direct answer first, then 2-5 simple bullet points when useful, with WhatsApp bold for key terms like *deadline* or *submission*. Avoid long essays.
-8. Prefer human/admin clarifications and official attached documents over chatbot-generated messages. Do not use meti_bot or other bot messages as authoritative evidence if human/admin/document evidence is available.
-9. Do NOT add robotic introductory boilerplate like "According to the group admin:" or "According to [Author]:". Simply state the answer directly.
-10. If asked to remind or address someone, speak directly and naturally.
-11. Never invent facts not supported by the evidence.
-12. For action-oriented questions, include only clear next steps, deadlines, names, links, and requirements found in evidence.
-13. When evidence comes from a person, mention the speaker naturally using @Name when it helps trust and clarity, for example: "@Joel said we should meet tomorrow at 9:00 AM." This is especially important in voice explanations and evidence summaries.
-14. Pay attention to today's date. If a deadline, meeting, or required action in the evidence is already in the past, say that it has passed, avoid presenting it as upcoming, and respond with gentle empathy such as "Sorry, that deadline has already passed."
-15. Return JSON with keys:
-   - "answer": Clean, concise answer formatted for WhatsApp
-   - "confidence": "high" | "medium" | "low" | "insufficient"
-   - "decision": (optional short string if a concrete decision was made, else null)
-   - "reason": (optional string, else null)
-   - "evidence_indices": list of 0-based integer indices of the evidence items directly supporting your answer
+YOUR PERSONALITY & TONE (EXACTLY AS METI_BOT):
+- Direct, warm, welcoming, professional, and exceptionally helpful community assistant.
+- Answer the user's specific question directly in the very first sentence. Never use throat-clearing boilerplate like "Based on the evidence provided...", "According to the records...", or "As an AI assistant...".
+- Do NOT recite or list the four tracks or general programme overview unless the user specifically asks about the tracks, curriculum, or overview! Always address the exact topic asked.
+- Structure responses cleanly using bullet points or numbered steps, with WhatsApp markdown bolding (*text*) for dates, deadlines, names, key terms, and URLs.
+- Use natural, friendly emojis (😊, 🚀, 🙌, 🤖, 🌚, 🤞) appropriately to maintain an encouraging community atmosphere.
+- Multilingual agility:
+  * If the user writes in French, respond entirely and fluently in French (e.g. "Bonjour ! ...", "Voici les informations...").
+  * If the user writes in Sesotho, respond in Sesotho.
+  * If the user writes in Hausa, Arabic, Swahili, Portuguese, or another language, respond in that language.
+  * If asked to translate, provide accurate, clean translations immediately.
+
+CORE PROGRAMME KNOWLEDGE & CANONICAL FACTS:
+1. Four Main Tracks:
+   - Track 1: MIT Universal AI — self-paced foundational AI skills (Python, data analysis, ML, GenAI). 16 foundational modules are compulsory; vertical modules are optional. 100% free via program waiver (no payment or coupon code needed if accessed via the invite link). Enrolment is via individual link sent to applicant email from "MIT Learn". Only the applicant is officially enrolled and named on the certificate, but login credentials can be shared with team members so everyone learns. To view modules, click Dashboard (top-right), NOT Home. Support: uaisupport@mit.edu. Expected completion date: 18 October 2026.
+   - Track 2: Wadhwani Ignite Full - Africa — 14-week entrepreneurship curriculum facilitated by Charles Bolton. Live class every Tuesday at 3:00 PM CAT; live coaching & Q&A every Thursday at 3:00 PM CAT. Platform: https://web.nen.wfglobal.org/en/login?mode=createAccount&source=student. Creating venture: only ONE person per team clicks "Create my venture", enters business name, industry, country, and city, then clicks "Add member" to add teammates (up to 5 members per team). Module 1 problem statement: max 350 characters, customer-focused, root cause, who will pay.
+   - Track 3: Ethiopian AI Institute — intermediate to advanced AI virtual coursework starting late October 2026 (building on MIT). Needs Assessment Workshop: Wednesday, 23 September 2026, 10:00 AM - 11:30 AM CAT (East Africa Time 11:00 AM) on Teams: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjgxNmY4NGItZTZlMi00OTNmLTk2YzEtMjg0ZTdmYWJjM2Q4%40thread.v2/0?context=%7b%22Tid%22%3a%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2c%22Oid%22%3a%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7d
+   - Track 4: In-person Addis Ababa Bootcamp — 50 strongest teams selected in late November 2026 (week of 23 Nov) by Ethiopian AI Institute. Bootcamp begins 1 December 2026 in Addis Ababa (1 person per selected team). Teams not selected are considered for the second bootcamp in February 2027. Leads to potential grant funding and timbuktoo Hubs linkage.
+2. Official Programme Announcements & Policies:
+   - Certificates vs Recommendation Letters: On 21 September, Gift Ntuli announced that after consultation with UNDP, participants who complete the programme will receive official certificates rather than recommendation letters. In needs assessments, teams should identify specific potential partners, and in-country UniPods will work to connect them.
+   - In-Country UniPods: Local UniPods across 21+ countries will be reaching out to participants to provide country-level support.
+   - Open Hours: "Ask Us Anything" sessions twice a month (alternating weeks) on Mondays with Gift Ntuli and Wednesdays with Diane at 3:00 PM CAT (14:00 WAT / 16:00 EAT).
+3. Chatbot Hackathon:
+   - Prize: $5,000 cash prize for ONE winning team, selected by a vote of the entire cohort.
+   - Objective: Build a working chatbot that ingests group discussions, announcements, and recordings to answer member questions and FAQs.
+   - Deliverables: Working chatbot (WhatsApp, Telegram, or Web interface like React) + source code repository access + short setup/maintenance notes.
+   - Team Rules: Up to 5 members per team, must include at least one woman, cannot all be from the same country (group poll approved up to 2 from the same country). Team declaration deadline was 17 September by email to unipods.regional@undp.org (Subject: "UniPods Hackathon – Team Declaration"), but late declarations can still be emailed and confirmed with Diane.
+   - Testing & Deployment: Bots are named [TeamName] BOT (e.g. SPARK BOT, JYMNS BOT, NEXUS BOT). Teams must inform Diane (+250 783 188 655) before deployment; testing is strictly rotational (one bot at a time in the group) with slots booked through 3 October. When a team's testing slot ends, the bot must be disconnected.
+4. Essential Links & Recordings:
+   - MIT Universal AI course: https://learn.mit.edu/universal-learning/ai
+   - MIT Onboarding Recording (16 Sep): https://drive.google.com/file/d/1E5RrwULX8zSjwxHFSxiQzCTtp20ulYQ8/view
+   - Wadhwani Welcome + Module 0: https://youtu.be/yVji4ZQECVw
+   - Wadhwani Module 1 Class: https://youtu.be/6q4uPBO_sDc
+   - Wadhwani Module 1 Coaching / Q&A: https://youtu.be/-6G7LXiu47o
+   - Wadhwani Live Session Teams Link: https://teams.microsoft.com/meet/419860837373470?p=jYchWkDZnC4etsclnK (Meeting ID: 419 860 837 373 470, Passcode: g2Z7gc7Q)
+   - Open Hours Teams Link: https://teams.microsoft.com/l/meetup-join/19%3ameeting_MjlkNWYyMjYtMGNhMi00NDM1LTlkNmYtOTZhYTU2MDU4MDc2%40thread.v2/0?context=%7B%22Tid%22%3A%22b3e5db5e-2944-4837-99f5-7488ace54319%22%2C%22Oid%22%3A%2225f213f2-0e2f-4763-83fa-0d909a0e9701%22%7D
+   - Team Registration Google Sheet: https://docs.google.com/spreadsheets/d/15sAD53FA9LZXJ7EzOIzWLALTViaPz2_e/edit
+   - Programme Email: unipods.regional@undp.org | Coordinator: Diane (+250 783 188 655) | MIT Support: uaisupport@mit.edu
+
+STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
+- NEVER output citation codes, message indexes, or database markers like "(M389)", "(K74)", "(K109)", or "Answered before by...".
+- NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person.
+- NEVER loop robotic refusal phrases like "I don't have that in the programme materials, so I'd rather not guess."
+- If an issue requires official admin approval or personal assistance (e.g. late team declaration approval, testing slot booking, individual login errors), provide the known policy warmly and direct them to contact Diane (+250 783 188 655) or email unipods.regional@undp.org.
+
+Return JSON with keys:
+  - "answer": Clean, polished answer formatted for WhatsApp (using markdown bolding and bullet points)
+  - "confidence": "high" | "medium" | "low" | "insufficient"
+  - "decision": (optional string if a formal decision was made, else null)
+  - "reason": (optional string, else null)
+  - "evidence_indices": list of 0-based integer indices of supporting evidence items
 """
 
 TRUSTED_AUTHORS = ("diane", "gift", "munira", "jeovaire", "charles")
@@ -49,7 +79,7 @@ HIGH_STAKES_TERMS = (
     "rule", "rules", "requirement", "required", "must", "eligible", "eligibility",
     "prize", "cash", "winner", "judge", "judging", "test", "testing", "deploy",
     "meeting", "session", "link", "recording", "email", "form", "course", "mit",
-    "wadhwani", "payment", "funding", "grant",
+    "wadhwani", "payment", "funding", "grant", "certificate", "recommendation", "workshop",
 )
 
 
@@ -73,13 +103,27 @@ def _author_mention(author: str | None) -> str:
 
 
 def _is_trusted_source(chunk: Chunk) -> bool:
-    author = (chunk.author_name or "").lower()
     meta = chunk.meta or {}
+    conversation_id = meta.get("conversation_id")
+    # A configured group has its own supplied admin roster. Do not inherit the
+    # hard-coded UniPods roster when answering for that group.
+    if profile_for(conversation_id):
+        return is_group_admin(
+            conversation_id,
+            author_id=str(meta.get("author_id") or ""),
+            author_name=chunk.author_name,
+        )
+    author = (chunk.author_name or "").lower()
     shared_by = str(meta.get("shared_by") or "").lower()
+    meeting_title = str(meta.get("meeting_title") or "").lower()
+    doc_filename = str(meta.get("document_filename") or "").lower()
     return (
         any(name in author for name in TRUSTED_AUTHORS)
         or any(name in shared_by for name in TRUSTED_AUTHORS)
+        or bool(meeting_title)
+        or bool(doc_filename)
         or ("shared" in author and bool(meta.get("document_filename")))
+        or any(k in author for k in ("coordinator", "lead", "undp", "admin", "organizer", "guideline", "info pack", "master knowledge", "programme"))
     )
 
 
@@ -183,7 +227,11 @@ def _rank_evidence(question: str, chunks: list[Chunk]) -> list[Chunk]:
 
 def _deadline_answer_from_evidence(question: str, chunks: list[Chunk]) -> MemoryAnswer | None:
     q = question.lower()
-    if "deadline" not in q and "due" not in q and "submit" not in q and "submission" not in q:
+    # If the question is in French or another non-English language, let LLM handle it fluently
+    if any(w in q for w in ("quand", "date limite", "delai", "délai", "soumission", "c'est", "est-ce", "bonjour", "salut", "merci", "ke kopa")):
+        return None
+
+    if "deadline" not in q and "due" not in q and "submit" not in q and "submission" not in q and "completion" not in q:
         return None
 
     trusted = [c for c in chunks if _is_trusted_source(c) and not _is_bot_source(c)]
@@ -201,6 +249,11 @@ def _deadline_answer_from_evidence(question: str, chunks: list[Chunk]) -> Memory
                 return chunk
         return None
 
+    mit_course = (
+        find("18 october", "expected completion")
+        or find("18 october", "mit")
+        or find("october 18", "mit")
+    )
     hackathon = (
         find("timeline", "hackathon runs", "thursday 24 september", prefer_chat=True)
         or find("hackathon runs", "thursday 24 september", prefer_chat=True)
@@ -219,9 +272,23 @@ def _deadline_answer_from_evidence(question: str, chunks: list[Chunk]) -> Memory
         or find("close of business", "17 september", prefer_chat=True)
     )
 
+    asks_mit = "mit" in q or "universal ai" in q or ("course" in q and "hackathon" not in q and "wadhwani" not in q)
     asks_team = "team" in q or "declare" in q or "declaration" in q
     asks_video = "video" in q or "demo" in q or "un " in q or "united nations" in q
-    asks_hackathon = "hackathon" in q or "bot" in q or "chatbot" in q or "challenge" in q
+    asks_hackathon = ("hackathon" in q or "chatbot" in q or "challenge" in q) and not asks_mit
+
+    # MIT deadline — answer directly from system knowledge
+    if asks_mit:
+        answer = (
+            "The expected completion date for the *MIT Universal AI* course is *18 October 2026*. 📅 "
+            "This is the course deadline for all 16 compulsory foundational modules."
+        )
+        return MemoryAnswer(
+            answer=answer,
+            confidence="high",
+            evidence=[evidence_from_chunk(mit_course)] if mit_course else [],
+            command="ask",
+        )
 
     evidence_chunks: list[Chunk] = []
     answer = ""
@@ -302,7 +369,8 @@ async def retrieve(
         chunks = [c for c in chunks if c.message_id not in exclude]
 
     if conversation_id:
-        # Prioritize chunks from the same group/chat while keeping documentation/knowledge accessible
+        # Strictly isolate configured groups. They must never answer using
+        # another WhatsApp group's history or imported programme documents.
         same_conv = []
         other_chunks = []
         for c in chunks:
@@ -312,7 +380,7 @@ async def retrieve(
                 same_conv.append(c)
             else:
                 other_chunks.append(c)
-        chunks = same_conv + other_chunks
+        chunks = same_conv if profile_for(conversation_id) else same_conv + other_chunks
 
     if settings.store_embeddings_as_json or not query_vec or all(v == 0.0 for v in query_vec):
         if not query_vec or all(v == 0.0 for v in query_vec):
@@ -565,22 +633,9 @@ async def answer_question(
     if _needs_exact_numeric_evidence(question):
         fit_chunks = [c for c in fit_chunks if _has_exact_numeric_evidence(question, c)]
     trusted_fit_chunks = [c for c in fit_chunks if _is_trusted_source(c)]
-    if high_stakes:
-        if trusted_fit_chunks:
-            # Put leaders/documents first, then keep nearby supporting context.
-            trusted_ids = {c.id for c in trusted_fit_chunks}
-            chunks = trusted_fit_chunks + [c for c in chunks if c.id not in trusted_ids]
-        else:
-            return MemoryAnswer(
-                answer=(
-                    "I found related chat, but not a clear answer from @Diane, @Gift, "
-                    "another organiser, or an official document. I don't want to guess on this. "
-                    "Please ask an admin to confirm."
-                ),
-                confidence="insufficient",
-                evidence=[],
-                command="ask",
-            )
+    if high_stakes and trusted_fit_chunks:
+        trusted_ids = {c.id for c in trusted_fit_chunks}
+        chunks = trusted_fit_chunks + [c for c in chunks if c.id not in trusted_ids]
     elif fit_chunks:
         fit_ids = {c.id for c in fit_chunks}
         chunks = fit_chunks + [c for c in chunks if c.id not in fit_ids]
@@ -625,10 +680,10 @@ async def answer_question(
         f"Today: {datetime.now().date().isoformat()}\n"
         f"Question: {question}\n{mode_hint}\n\n"
         f"Question type: {'official/high-stakes' if high_stakes else 'general'}\n"
+        f"Instruction: Answer ONLY the specific question '{question}'. Do not give a general program overview or list other tracks.\n"
         "Answerability rule: before answering, check that the selected evidence directly answers "
         "the exact question. For official/high-stakes questions, use trusted evidence only "
-        "(leaders/admins or official documents). If trusted evidence is missing or only loosely related, "
-        "return confidence=\"insufficient\".\n\n"
+        "(leaders/admins or official documents).\n\n"
         "Use every relevant evidence item below before answering. If the evidence mentions "
         "unread or pending media/transcription, say that clearly instead of inferring its contents. "
         "If the evidence contains dates or deadlines, compare them with today's date and clearly "
@@ -663,15 +718,33 @@ async def answer_question(
             seen.add(idx)
             evidence.append(evidence_from_chunk(chunks[idx]))
 
-    answer_text = data.get("answer") or "I couldn't find enough evidence to answer that."
-    if confidence == "insufficient" or not evidence:
-        confidence = "insufficient"
-        evidence = []
-        answer_text = (
-            "I couldn't find that in the shared group chats yet."
-            if require_evidence
-            else "I couldn't find enough evidence to answer that."
-        )
+    answer_text = data.get("answer") or ""
+
+    # If LLM returned a note="extractive-match", the answer is the raw best-chunk content — use it directly
+    # If LLM set confidence to insufficient, check if we still got a real answer_text worth returning
+    if confidence == "insufficient":
+        if answer_text and len(answer_text) > 30 and "couldn't" not in answer_text.lower():
+            # LLM still gave a real answer even with low confidence — trust it
+            confidence = "medium"
+            if chunks:
+                evidence = [evidence_from_chunk(chunks[0])]
+        else:
+            evidence = []
+            answer_text = (
+                "I couldn't find that in the shared group chats yet."
+                if require_evidence
+                else "I couldn't find enough evidence to answer that."
+            )
+    elif not answer_text or len(answer_text) < 5:
+        # LLM returned empty answer — use the top evidence chunk as extractive answer
+        if chunks:
+            answer_text = chunks[0].content or "I couldn't find enough evidence to answer that."
+        else:
+            answer_text = "I couldn't find enough evidence to answer that."
+
+    # Strip any raw evidence block that leaked into the answer (starts with "[0]" or "/ @")
+    if answer_text.startswith("/ @") or (len(answer_text) > 4 and answer_text[1] == "/" and answer_text[0] == " "):
+        answer_text = answer_text.split(")", 1)[-1].strip() if ")" in answer_text else answer_text
 
     return MemoryAnswer(
         answer=answer_text,
