@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,14 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:1234@localhost:5432/hackathon_db"
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_asyncpg_driver(cls, value: str) -> str:
+        """Accept managed-host PostgreSQL URLs directly (Render uses postgresql://)."""
+        if isinstance(value, str) and value.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + value.removeprefix("postgresql://")
+        return value
     # Set true only if CREATE EXTENSION vector works on your Postgres
     use_pgvector: bool = False
 
