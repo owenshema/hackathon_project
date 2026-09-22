@@ -17,7 +17,11 @@ from app.services.clarification import (
     is_important_unanswered_question,
     needs_clarification,
 )
-from app.services.voice_recap import synthesize_voice_note
+from app.services.voice_recap import (
+    cache_catchup_script,
+    recap_text_to_voice_script,
+    synthesize_voice_note,
+)
 from app.services.group_recap import maybe_send_group_recaps
 from app.services.ingestion import ingest_messages
 from app.services.response_router import handle_user_message
@@ -201,6 +205,23 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                             )
                         elif not was_mentioned:
                             continue
+
+                # Keep a short-lived spoken version of every answer actually
+                # sent to this requester in this chat. A later "read that
+                # aloud" or "send the voice message" request can therefore
+                # read the specific answer they received, rather than a
+                # generic group catch-up. Do not replace it with the
+                # acknowledgement created for a voice request itself.
+                if (
+                    isinstance(result, MemoryAnswer)
+                    and not result.deliver_voice_recap
+                    and formatted.strip()
+                ):
+                    cache_catchup_script(
+                        msg.author_id,
+                        msg.conversation_id if is_group else None,
+                        recap_text_to_voice_script(formatted),
+                    )
 
                 try:
                     attachments = (

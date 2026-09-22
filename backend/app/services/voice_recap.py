@@ -26,6 +26,10 @@ _VOICE_RECAP_PATTERNS = [
     re.compile(r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\s+(?:message|note)\b", re.I),
     re.compile(r"\baudio\s+recap\b", re.I),
     re.compile(r"\bread\s+(?:it|this|the\s+summary)\s+(?:out|aloud|to\s+me)\b", re.I),
+    re.compile(
+        r"\bread\s+(?:(?:that|this|the|my|your)\s+)?(?:last\s+)?(?:[\w-]+\s+){0,5}answer\s+(?:out|aloud|to\s+me)\b",
+        re.I,
+    ),
 ]
 
 
