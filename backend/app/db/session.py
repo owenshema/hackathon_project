@@ -7,15 +7,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 from app.db.models import Base
 
+database_url = settings.database_url.strip().strip("\"'")
+# Managed PostgreSQL providers commonly supply a standard ``postgresql://``
+# URL, while SQLAlchemy's async engine needs an explicit async driver.
+# Keep this normalization beside engine construction as a defensive fallback
+# for process environments that bypass settings validation.
+if database_url.startswith("postgresql://"):
+    database_url = "postgresql+asyncpg://" + database_url.removeprefix("postgresql://")
+
 connect_args = {}
-if settings.use_sqlite:
+if database_url.startswith("sqlite"):
     # Ensure data directory exists for SQLite file
-    db_path = settings.database_url.split("///")[-1]
+    db_path = database_url.split("///")[-1]
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     connect_args = {"check_same_thread": False}
 
 engine = create_async_engine(
-    settings.database_url,
+    database_url,
     echo=False,
     connect_args=connect_args,
 )
