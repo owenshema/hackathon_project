@@ -168,7 +168,12 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe", "meti", "meti_bot", "Meti", "The Palm", "Palm"],
                 )
 
-                if not needs_clarification(text, is_group=is_group, was_mentioned=was_mentioned):
+                # In direct chats, the bot is the intended recipient, so answer any
+                # meaningful text instead of requiring a question-shaped message.
+                # Groups retain the mention/question guard to avoid interrupting chat.
+                if is_group and not needs_clarification(
+                    text, is_group=True, was_mentioned=was_mentioned
+                ):
                     continue
 
                 exclude_ids: set = set()
