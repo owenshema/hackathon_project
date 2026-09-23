@@ -19,7 +19,10 @@ CLARIFY_PATTERNS = [
     r"\bhow (do|did|can|much|many|to)\b",
     r"\bwhere (is|was|are|do|can)\b",
     r"\bwhich (one|option|model|database|room)\b",
-    r"\b(is|are|will|can|do|does|did|should|could|would)\s+(there|we|it|anyone|somebody|the)\b",
+    # Modal questions must begin the message.  Without the anchor, ordinary
+    # discussion such as "we can do it" is mistaken for the question "do it".
+    r"^\s*(?:is|are|will|can|does|did|should|could|would)\s+(?:there|we|it|anyone|somebody|the)\b",
+    r"^\s*do\s+(?:we|they|i|you)\b",
     r"\bremind me\b",
     r"\bcan someone (clarify|explain|confirm|tell)\b",
     r"\bneed clarification\b",
