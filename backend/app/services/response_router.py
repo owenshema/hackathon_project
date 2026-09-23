@@ -71,7 +71,9 @@ def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
             text = text[:3490] + "…"
         skip_offer = (
             answer.deliver_voice_recap
+            or answer.confidence == "insufficient"
             or "read aloud" in text.lower()
+            or "won't guess" in text.lower()
         )
         return _with_whatsapp_voice_offer(text, platform, skip=skip_offer)
 

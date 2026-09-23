@@ -14,7 +14,6 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
-    is_important_unanswered_question,
     needs_clarification,
 )
 from app.services.voice_recap import (
@@ -192,7 +191,17 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
 
                 text, was_mentioned = check_and_strip_bot_mention(
                     msg.text,
-                    bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe", "meti", "meti_bot", "Meti", "The Palm", "Palm"],
+                    bot_names=[
+                        "Unipod_ai",
+                        "Unipod",
+                        "UniPods",
+                        "Memory",
+                        "meti_bot",
+                        "meti",
+                        "Meti",
+                        "The Palm",
+                        "Palm",
+                    ],
                 )
 
                 # In direct chats, the bot is the intended recipient, so answer any
@@ -219,14 +228,16 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     require_evidence=True,
                 )
 
-                # In groups: stay silent on ordinary unanswered questions, but flag important gaps.
+                # In groups: stay silent unless we actually have an answer.
+                # Important unanswered gaps can still be flagged to admins.
                 if is_group and isinstance(result, MemoryAnswer):
                     if result.confidence == "insufficient":
-                        if is_important_unanswered_question(text):
-                            formatted = _format_admin_attention_reply(
-                                text, msg.author_name
+                        if was_mentioned:
+                            formatted = (
+                                "I don't have that in this group's memory yet, "
+                                "so I won't guess."
                             )
-                        elif not was_mentioned:
+                        else:
                             continue
 
                 # Keep every answer actually sent to this requester in this

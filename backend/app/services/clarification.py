@@ -43,6 +43,8 @@ CLARIFY_PATTERNS = [
     r"\bwas it (decided|confirmed|agreed)\b",
     r"\bany update(s)?\b",
     r"\bany news\b",
+    r"\b(?:qu['’]est[- ]ce|c['’]est (?:quoi|quand)|quelle?s?\s+(?:est|sont)|peux-tu|pourrais-tu|explique|rappel(?:e)?[- ]moi)\b",
+    r"\b(?:mets[- ]moi à jour|rattrape[- ]moi|qu['’]est-ce que j['’]ai manqué)\b",
 ]
 
 _COMPILED = [re.compile(p, re.I) for p in CLARIFY_PATTERNS]
@@ -165,13 +167,6 @@ def check_and_strip_bot_mention(
         if re.search(pattern, cleaned, flags=re.I):
             was_mentioned = True
             cleaned = re.sub(pattern, "", cleaned, flags=re.I)
-
-    # If not already matched, detect ANY @mention in the message (e.g. @joe, @bot, etc.)
-    if not was_mentioned and "@" in cleaned:
-        mention_match = re.search(r"@(\w+)", cleaned)
-        if mention_match:
-            was_mentioned = True
-            cleaned = re.sub(r"@\w+", "", cleaned)
 
     return cleaned.strip(), was_mentioned
 

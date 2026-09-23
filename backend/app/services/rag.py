@@ -67,6 +67,9 @@ STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
 - Use WhatsApp bold as *word*. Never use **double asterisks**.
 - Answer only from CORE PROGRAMME KNOWLEDGE or the evidence items. Do not invent dates, partners, policies, names, or bot capabilities.
 - If the evidence does not answer the question and it is not a CORE PROGRAMME fact, say you could not find that in the shared group chats yet. Do not guess.
+- NEVER mix dates or times from different events. A date from one session and a time from another is always wrong.
+- For when/date/time questions: quote only the date and time that appear together in the same evidence item for the named event. If that pair is missing, set confidence to "insufficient".
+- Do not reuse CORE PROGRAMME dates unless the user named that exact programme item (MIT, Wadhwani, Open Hours, bootcamp, workshop).
 - NEVER output citation codes, message indexes, or database markers like "(M389)", "(K74)", "(K109)", or "Answered before by...".
 - NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person.
 - If an issue requires official admin approval or personal assistance (e.g. late team declaration approval, testing slot booking, individual login errors), provide the known policy warmly and direct them to contact Diane (+250 783 188 655) or email unipods.regional@undp.org.
@@ -231,117 +234,264 @@ def _rank_evidence(question: str, chunks: list[Chunk]) -> list[Chunk]:
     return ranked
 
 
-def _deadline_answer_from_evidence(question: str, chunks: list[Chunk]) -> MemoryAnswer | None:
-    q = question.lower()
-    # If the question is in French or another non-English language, let LLM handle it fluently
-    if any(w in q for w in ("quand", "date limite", "delai", "délai", "soumission", "c'est", "est-ce", "bonjour", "salut", "merci", "ke kopa")):
+_MONTHS = (
+    "january|february|march|april|may|june|july|august|september|october|"
+    "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|"
+    "janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|"
+    "septembre|octobre|novembre|decembre|décembre"
+)
+_DATE_RE = re.compile(
+    rf"\b(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTHS})(?:\s*,?\s*\d{{4}})?|"
+    rf"(?:{_MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:\s*,?\s*\d{{4}})?|"
+    rf"\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\b",
+    re.I,
+)
+_TIME_RE = re.compile(
+    r"\b(?:\d{1,2}:\d{2}|\d{1,2}\s*(?:h|:)\s*\d{2}|\d{1,2}\s*(?:am|pm))"
+    r"(?:\s*(?:cat|eat|wat|gmt|utc))?\b",
+    re.I,
+)
+_RELATIVE_RE = re.compile(
+    r"\b(today|tomorrow|yesterday|tonight|this\s+\w+day|next\s+\w+day|"
+    r"aujourd['’]hui|demain|hier)\b",
+    re.I,
+)
+_DATETIME_QUESTION_RE = re.compile(
+    r"\b(when|what\s+time|what\s+date|what\s+day|deadline|due\s+date|"
+    r"quand|quelle?\s+heure|quelle?\s+date|date\s+limite|délai|delai|"
+    r"c['’]est\s+quand|à\s+quelle\s+heure|horaire)\b",
+    re.I,
+)
+_GENERIC_EVENT_TOKENS = {
+    "meeting", "session", "class", "call", "event", "time", "date",
+    "reunion", "cours", "appel",
+}
+
+
+def _is_datetime_question(question: str) -> bool:
+    return bool(_DATETIME_QUESTION_RE.search(question or ""))
+
+
+def _datetimes_in_text(text: str) -> list[str]:
+    found: list[str] = []
+    for pattern in (_DATE_RE, _TIME_RE, _RELATIVE_RE):
+        for match in pattern.finditer(text or ""):
+            value = re.sub(r"\s+", " ", match.group(0)).strip()
+            if value and value.lower() not in {v.lower() for v in found}:
+                found.append(value)
+    return found
+
+
+def _event_tokens(question: str) -> list[str]:
+    stop = {
+        "what", "when", "where", "which", "the", "and", "for", "our", "you",
+        "please", "tell", "deadline", "date", "time", "due", "submit",
+        "submission", "schedule", "quand", "quelle", "heure", "date",
+        "limite", "est", "les", "des", "une", "pour", "avec", "dans",
+        "this", "that", "have", "does", "will",
+    }
+    keep_short = {"mit", "cat", "eat", "wat", "undp"}
+    tokens = []
+    for token in re.findall(r"[a-zA-ZÀ-ÿ0-9]+", (question or "").lower()):
+        if token in stop:
+            continue
+        if len(token) >= 4 or token in keep_short:
+            tokens.append(token)
+    return tokens
+
+
+def _clause_datetime(part: str) -> list[str]:
+    """At most one date and one nearby time from a single clause."""
+    dates = [m.group(0) for m in _DATE_RE.finditer(part)]
+    times = [m.group(0) for m in _TIME_RE.finditer(part)]
+    relatives = [m.group(0) for m in _RELATIVE_RE.finditer(part)]
+    if len(dates) > 1:
+        return []
+    date = dates[0] if dates else (relatives[0] if relatives else None)
+    time = times[0] if len(times) == 1 else None
+    if date and time:
+        di = part.lower().find(date.lower())
+        ti = part.lower().find(time.lower())
+        if di >= 0 and ti >= 0 and abs(di - ti) > 90:
+            return [date]
+        return [date, time]
+    if date:
+        return [date]
+    if time:
+        return [time]
+    return []
+
+
+def _datetimes_for_event(text: str, event_tokens: list[str]) -> list[str]:
+    """Dates/times from the clause that names the asked event, not the whole recap."""
+    specific = [t for t in event_tokens if t not in _GENERIC_EVENT_TOKENS]
+    needed = specific or event_tokens
+    content = text or ""
+    parts = re.split(r"(?<=[.!?\n;,])\s+|•|\u2022|\n+", content)
+    matches: list[tuple[int, list[str]]] = []
+    for part in parts:
+        stamps = _clause_datetime(part)
+        if not stamps:
+            continue
+        lower = part.lower()
+        hits = sum(1 for token in needed if token in lower) if needed else 0
+        if needed and hits == 0:
+            continue
+        matches.append((hits, stamps))
+    if not matches:
+        return []
+    matches.sort(key=lambda item: item[0], reverse=True)
+    top_hits, top_stamps = matches[0]
+    for hits, stamps in matches[1:]:
+        if hits == top_hits and [s.lower() for s in stamps] != [s.lower() for s in top_stamps]:
+            return []
+    return top_stamps
+
+
+def _answer_from_dated_evidence(
+    question: str, chunks: list[Chunk]
+) -> MemoryAnswer | None:
+    """Answer a when/date/time question from one matching evidence item only."""
+    event_tokens = _event_tokens(question)
+    specific = [t for t in event_tokens if t not in _GENERIC_EVENT_TOKENS]
+    if not specific:
+        return None
+    scored: list[tuple[float, Chunk, list[str]]] = []
+    for chunk in chunks:
+        if _is_bot_source(chunk):
+            continue
+        stamps = _datetimes_for_event(chunk.content or "", specific)
+        if not stamps:
+            continue
+        text = (chunk.content or "").lower()
+        hits = sum(1 for token in specific if token in text)
+        if hits == 0:
+            continue
+        fit = _fit_score(question, chunk)
+        if fit < 1.0:
+            continue
+        scored.append((fit + _authority_score(chunk) + hits, chunk, stamps))
+
+    if not scored:
         return None
 
-    if "deadline" not in q and "due" not in q and "submit" not in q and "submission" not in q and "completion" not in q:
-        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score, chunk, stamps = scored[0]
+    for score, _other, other_stamps in scored[1:3]:
+        if score >= top_score - 0.4 and [s.lower() for s in other_stamps] != [
+            s.lower() for s in stamps
+        ]:
+            return None
+    when = " at ".join(stamps[:2]) if len(stamps) > 1 else stamps[0]
+    today = datetime.now().date()
+    passed = ""
+    year_match = re.search(r"\b(20\d{2})\b", " ".join(stamps))
+    month_day = _DATE_RE.search(" ".join(stamps)) or _DATE_RE.search(chunk.content or "")
+    if month_day:
+        try:
+            parsed = None
+            raw = re.sub(r"(st|nd|rd|th)", "", month_day.group(0), flags=re.I).replace(",", "").strip()
+            for fmt in ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%d %B", "%d %b", "%B %d", "%b %d", "%d/%m/%Y"):
+                try:
+                    parsed = datetime.strptime(raw, fmt)
+                    if parsed.year == 1900:
+                        parsed = parsed.replace(year=today.year)
+                    break
+                except ValueError:
+                    continue
+            if parsed and parsed.date() < today:
+                passed = " That date has already passed."
+            elif parsed:
+                passed = " That date is still upcoming."
+        except Exception:
+            passed = ""
+    if year_match and not passed:
+        try:
+            if int(year_match.group(1)) < today.year:
+                passed = " That date has already passed."
+        except ValueError:
+            pass
 
-    trusted = [c for c in chunks if _is_trusted_source(c) and not _is_bot_source(c)]
-
-    def find(*needles: str, prefer_chat: bool = False) -> Chunk | None:
-        candidates = trusted
-        if prefer_chat:
-            candidates = sorted(
-                trusted,
-                key=lambda c: 0 if (c.meta or {}).get("source_type") == "chat" else 1,
-            )
-        for chunk in candidates:
-            text = (chunk.content or "").lower()
-            if all(needle in text for needle in needles):
-                return chunk
-        return None
-
-    mit_course = (
-        find("18 october", "expected completion")
-        or find("18 october", "mit")
-        or find("october 18", "mit")
-    )
-    hackathon = (
-        find("timeline", "hackathon runs", "thursday 24 september", prefer_chat=True)
-        or find("hackathon runs", "thursday 24 september", prefer_chat=True)
-        or find("timeline", "final submission deadline", "24 september", prefer_chat=True)
-        or find("hackathon", "thursday 24 september")
-        or find("final submission deadline", "24 september")
-    )
-    video = (
-        find("video", "2:00 pm cat")
-        or find("demo", "2:00 pm cat")
-        or find("18 september", "2:00 pm cat")
-    )
-    team = (
-        find("team declarations due", "17 september", prefer_chat=True)
-        or find("team declaration", "17 september", prefer_chat=True)
-        or find("close of business", "17 september", prefer_chat=True)
-    )
-
-    asks_mit = "mit" in q or "universal ai" in q or ("course" in q and "hackathon" not in q and "wadhwani" not in q)
-    asks_team = "team" in q or "declare" in q or "declaration" in q
-    asks_video = "video" in q or "demo" in q or "un " in q or "united nations" in q
-    asks_hackathon = ("hackathon" in q or "chatbot" in q or "challenge" in q) and not asks_mit
-
-    # MIT deadline — answer directly from system knowledge
-    if asks_mit:
-        answer = (
-            "The expected completion date for the *MIT Universal AI* course is *18 October 2026*. 📅 "
-            "This is the course deadline for all 16 compulsory foundational modules."
-        )
-        return MemoryAnswer(
-            answer=answer,
-            confidence="high",
-            evidence=[evidence_from_chunk(mit_course)] if mit_course else [],
-            command="ask",
-        )
-
-    evidence_chunks: list[Chunk] = []
-    answer = ""
-    if asks_team and team:
-        answer = (
-            "The team-declaration deadline was close of business on Thursday 17 September 2026. "
-            "Sorry, that deadline has already passed."
-        )
-        evidence_chunks = [team]
-    elif asks_video and video:
-        answer = (
-            "The UN demo video submission deadline was Friday 18 September 2026 at 2:00 PM CAT. "
-            "Sorry, that deadline has already passed."
-        )
-        evidence_chunks = [video]
-    elif asks_hackathon and hackathon:
-        answer = "The chatbot hackathon submission deadline is Thursday 24 September 2026."
-        evidence_chunks = [hackathon]
-    elif hackathon or video or team:
-        parts = []
-        if hackathon:
-            parts.append("For the chatbot hackathon, the final submission deadline is Thursday 24 September 2026.")
-            evidence_chunks.append(hackathon)
-        if video:
-            parts.append("The separate UN demo video deadline was Friday 18 September 2026 at 2:00 PM CAT, so sorry, that one has already passed.")
-            evidence_chunks.append(video)
-        if team:
-            parts.append("The team-declaration deadline was close of business on Thursday 17 September 2026, so that has also passed.")
-            evidence_chunks.append(team)
-        answer = " ".join(parts)
-
-    if not answer or not evidence_chunks:
-        return None
-
-    deduped: list[Chunk] = []
-    seen: set[uuid.UUID] = set()
-    for chunk in evidence_chunks:
-        if chunk.id not in seen:
-            seen.add(chunk.id)
-            deduped.append(chunk)
-
+    excerpt = (chunk.content or "").strip()
+    if len(excerpt) > 280:
+        excerpt = excerpt[:277] + "…"
+    answer = f"*{when}*.{passed}\n\n{excerpt}"
     return MemoryAnswer(
-        answer=answer,
+        answer=answer[:1200],
         confidence="high",
-        evidence=[evidence_from_chunk(c) for c in deduped[:3]],
+        evidence=[evidence_from_chunk(chunk)],
         command="ask",
     )
+
+
+def _deadline_answer_from_evidence(question: str, chunks: list[Chunk]) -> MemoryAnswer | None:
+    if not _is_datetime_question(question):
+        return None
+    return _answer_from_dated_evidence(question, chunks)
+
+
+def _canonical_datetime_answer(question: str) -> MemoryAnswer | None:
+    """One named programme event only — never combine facts from two tracks."""
+    q = (question or "").lower()
+    facts: list[tuple[tuple[str, ...], str]] = [
+        (
+            ("wadhwani", "ignite"),
+            "Wadhwani live class is every *Tuesday at 3:00 PM CAT*. Coaching and Q&A is every *Thursday at 3:00 PM CAT*.",
+        ),
+        (
+            ("open hours", "ask us anything"),
+            "Open Hours are twice a month: Mondays with Gift Ntuli and Wednesdays with Diane at *3:00 PM CAT*.",
+        ),
+        (
+            ("mit",),
+            "MIT Universal AI expected completion date is *18 October 2026*.",
+        ),
+        (
+            ("bootcamp", "addis"),
+            "The in-person Addis Ababa bootcamp begins *1 December 2026*. Selection is late November 2026 (week of 23 Nov).",
+        ),
+        (
+            ("workshop", "needs assessment"),
+            "The Needs Assessment Workshop is *Wednesday, 23 September 2026, 10:00 AM–11:30 AM CAT*.",
+        ),
+        (
+            ("hackathon",),
+            "Hackathon team declaration was *17 September*; testing slots run through *3 October*.",
+        ),
+    ]
+    hits = []
+    for keys, answer in facts:
+        if any(key in q for key in keys):
+            hits.append(answer)
+    if len(hits) != 1:
+        return None
+    # Vague "when is the class/session" must not pick a canonical time.
+    if re.search(r"\b(class|session|meeting|call)\b", q) and not any(
+        name in q for name in ("wadhwani", "ignite", "open hours", "workshop", "mit", "bootcamp")
+    ):
+        return None
+    return MemoryAnswer(answer=hits[0], confidence="high", evidence=[], command="ask")
+
+
+def _ungrounded_datetimes(answer: str, evidence_text: str) -> list[str]:
+    ev = re.sub(r"\s+", " ", evidence_text or "").lower()
+    bad: list[str] = []
+    for stamp in _datetimes_in_text(answer):
+        compact = re.sub(r"\s+", " ", stamp).lower()
+        if compact in {"today", "tomorrow", "yesterday", "aujourd'hui", "demain", "hier"}:
+            continue
+        if compact in ev:
+            continue
+        digits = re.findall(r"\d+", compact)
+        months = re.findall(
+            rf"(?:{_MONTHS})",
+            compact,
+            flags=re.I,
+        )
+        if digits and all(d in ev for d in digits) and (not months or all(m.lower() in ev for m in months)):
+            continue
+        bad.append(stamp)
+    return bad
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -483,6 +633,16 @@ async def retrieve(
 
             scored = [(score(c), c) for c in chunks]
             scored = [(s, c) for s, c in scored if s > 0]
+            if _is_datetime_question(query):
+                event_tokens = [
+                    t for t in _event_tokens(query) if t not in _GENERIC_EVENT_TOKENS
+                ]
+                if event_tokens:
+                    scored = [
+                        (s, c)
+                        for s, c in scored
+                        if _datetimes_for_event(c.content or "", event_tokens)
+                    ]
             scored.sort(key=lambda x: x[0], reverse=True)
             return [c for _, c in scored[:limit]]
 
@@ -660,16 +820,26 @@ async def answer_question(
     )
     chunks = _rank_evidence(question, chunks)
 
-    if "deadline" in question.lower() or "due" in question.lower() or "submit" in question.lower() or "submission" in question.lower():
-        deadline_result = await db.execute(select(Chunk).order_by(Chunk.created_at.desc()).limit(2000))
-        deadline_chunks = _rank_evidence(question, list(deadline_result.scalars().all()))
-    else:
-        deadline_chunks = chunks
-    deadline_answer = _deadline_answer_from_evidence(question, deadline_chunks)
-    if deadline_answer:
-        return deadline_answer
+    if _is_datetime_question(question):
+        deadline_answer = _deadline_answer_from_evidence(question, chunks)
+        if deadline_answer:
+            return deadline_answer
+        if not require_evidence:
+            canonical = _canonical_datetime_answer(question)
+            if canonical:
+                return canonical
+        return MemoryAnswer(
+            answer=(
+                "I couldn't find a matching date or time in the group memory for that."
+                if require_evidence
+                else "I couldn't find enough evidence to answer that."
+            ),
+            confidence="insufficient",
+            evidence=[],
+            command="ask",
+        )
 
-    fit_chunks = [c for c in chunks if _fit_score(question, c) >= 0.45]
+    fit_chunks = [c for c in chunks if _fit_score(question, c) >= 0.9]
     if _needs_exact_numeric_evidence(question):
         fit_chunks = [c for c in fit_chunks if _has_exact_numeric_evidence(question, c)]
     trusted_fit_chunks = [c for c in fit_chunks if _is_trusted_source(c)]
@@ -681,6 +851,13 @@ async def answer_question(
         chunks = fit_chunks + [c for c in chunks if c.id not in fit_ids]
 
     chunks = chunks[:10 if fast else 16]
+    if require_evidence and not fit_chunks:
+        return MemoryAnswer(
+            answer="I couldn't find that in the shared group chats yet.",
+            confidence="insufficient",
+            evidence=[],
+            command="ask",
+        )
 
     evidence_blocks = []
     for i, chunk in enumerate(chunks):
@@ -728,7 +905,9 @@ async def answer_question(
         "unread or pending media/transcription, say that clearly instead of inferring its contents. "
         "If the evidence contains dates or deadlines, compare them with today's date and clearly "
         "say when something has already passed. Use evidence timestamps to interpret relative dates "
-        'like "today", "tomorrow", and "yesterday".\n\n'
+        'like "today", "tomorrow", and "yesterday". Never attach a time from one evidence item '
+        "to a date from another item.\n"
+        "If no evidence item clearly answers the question, set confidence to insufficient.\n\n"
         f"Evidence:\n" + "\n".join(evidence_blocks) + "\n\n"
         "Respond with JSON only."
     )
@@ -746,10 +925,23 @@ async def answer_question(
     if not isinstance(indices, list):
         indices = []
 
-    # If the LLM has confidence, ensure at least one supporting chunk is cited
+    # Only cite a chunk the model named, and only if it actually fits.
     if confidence != "insufficient":
-        if not indices and chunks:
-            indices = [0]
+        if not indices:
+            confidence = "insufficient"
+            indices = []
+        else:
+            grounded_indices = []
+            for idx in indices:
+                if (
+                    isinstance(idx, int)
+                    and 0 <= idx < len(chunks)
+                    and _fit_score(question, chunks[idx]) >= 0.45
+                ):
+                    grounded_indices.append(idx)
+            indices = grounded_indices
+            if not indices:
+                confidence = "insufficient"
     else:
         indices = []
 
@@ -771,11 +963,29 @@ async def answer_question(
         )
         confidence = "insufficient"
     elif not answer_text or len(answer_text) < 5:
-        # LLM returned empty answer — use the top evidence chunk as extractive answer
-        if chunks:
-            answer_text = chunks[0].content or "I couldn't find enough evidence to answer that."
-        else:
-            answer_text = "I couldn't find enough evidence to answer that."
+        evidence = []
+        answer_text = (
+            "I couldn't find that in the shared group chats yet."
+            if require_evidence
+            else "I couldn't find enough evidence to answer that."
+        )
+        confidence = "insufficient"
+    elif evidence:
+        cited = " ".join((ev.excerpt or "") for ev in evidence)
+        cited += " " + " ".join(
+            (chunks[idx].content or "")
+            for idx in indices
+            if isinstance(idx, int) and 0 <= idx < len(chunks)
+        )
+        leaked = _ungrounded_datetimes(answer_text, cited)
+        if leaked:
+            evidence = []
+            answer_text = (
+                "I couldn't find a matching date or time in the group memory for that."
+                if require_evidence
+                else "I couldn't find enough evidence to answer that."
+            )
+            confidence = "insufficient"
 
     # Strip any raw evidence block that leaked into the answer (starts with "[0]" or "/ @")
     if answer_text.startswith("/ @") or (len(answer_text) > 4 and answer_text[1] == "/" and answer_text[0] == " "):
