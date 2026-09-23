@@ -1,4 +1,4 @@
-"""Voice note recaps — TTS + short-lived cache after text catch-up."""
+"""Voice notes — TTS of the latest bot reply, including catch-up recaps."""
 
 from __future__ import annotations
 
@@ -16,8 +16,12 @@ from app.db.models import VoiceAnswer
 from app.schemas.memory import CatchUpResponse
 
 VOICE_RECAP_OFFER_WHATSAPP = (
-    "\n\n🎙 Want these messages as a voice note? Reply *send the voice message* "
-    "or tag me and say *voice recap*."
+    "\n\n🎙 Want this as a voice note? Reply *send the voice message*."
+)
+
+_VOICE_OFFER_STRIP = re.compile(
+    r"(?:🎙\s*)?Want (?:this|these messages) as a voice note\?.*$",
+    re.I | re.S,
 )
 
 VOICE_RECAP_TTL_SECONDS = 3600
@@ -167,11 +171,12 @@ def catchup_to_voice_script(recap: CatchUpResponse) -> str:
 
 
 def recap_text_to_voice_script(text: str) -> str:
-    cleaned = _strip_for_speech(text)
+    """Spoken script from the last bot reply (not recap-specific)."""
+    without_offer = _VOICE_OFFER_STRIP.sub("", text or "").strip()
+    cleaned = _strip_for_speech(without_offer)
     if not cleaned:
-        return "I could not build a voice recap from recent messages."
-    intro = "Here is a recap of recent group messages. "
-    return (intro + cleaned)[:3500]
+        return "I could not build a voice note from that message."
+    return cleaned[:3500]
 
 
 def _strip_for_speech(text: str) -> str:

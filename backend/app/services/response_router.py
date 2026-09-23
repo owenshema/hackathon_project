@@ -43,6 +43,23 @@ def _author_mention(author: str | None) -> str:
     return known.get(first_name.lower(), f"@{first_name}" if first_name else "@someone")
 
 
+def _with_whatsapp_voice_offer(
+    text: str,
+    platform: Platform,
+    *,
+    skip: bool = False,
+) -> str:
+    if (
+        skip
+        or platform != Platform.WHATSAPP
+        or not (text or "").strip()
+        or "Want this as a voice note" in text
+        or "Want these messages as a voice note" in text
+    ):
+        return text
+    return text + VOICE_RECAP_OFFER_WHATSAPP
+
+
 def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
     """Clean text suitable for WhatsApp / Teams, matching meti_bot style."""
     mobile = platform in {Platform.WHATSAPP, Platform.TEAMS}
@@ -51,7 +68,12 @@ def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
         text = (answer.answer or "").strip()
         if len(text) > 3500:
             text = text[:3490] + "…"
-        return text
+        skip_offer = (
+            answer.deliver_voice_recap
+            or answer.confidence == "insufficient"
+            or "read aloud" in text.lower()
+        )
+        return _with_whatsapp_voice_offer(text, platform, skip=skip_offer)
 
     lines = [answer.answer]
     if answer.decision:
@@ -88,11 +110,10 @@ def format_catchup_for_platform(
             "Action items\n" + "\n".join(f"• {x}" for x in recap.action_items[:5])
         )
     if not sections:
-        return "Nothing new since you were last active — you're caught up."
-    body = "*Today's group catch-up*\n\n" + "\n\n".join(sections)
-    if platform == Platform.WHATSAPP:
-        body += VOICE_RECAP_OFFER_WHATSAPP
-    return body
+        body = "Nothing new since you were last active — you're caught up."
+    else:
+        body = "*Today's group catch-up*\n\n" + "\n\n".join(sections)
+    return _with_whatsapp_voice_offer(body, platform)
 
 
 async def handle_user_message(
@@ -282,15 +303,15 @@ async def handle_user_message(
         if not script.strip():
             empty = MemoryAnswer(
                 answer=(
-                    "I don't have a recent catch-up to read aloud yet. "
-                    "Ask me to *catch you up* first, then tag me for a *voice recap*."
+                    "I don't have a recent reply to read aloud yet. "
+                    "Ask me something first, then reply *send the voice message*."
                 ),
                 confidence="high",
                 evidence=[],
             )
             return empty, format_answer_for_platform(empty, platform)
         voice_answer = MemoryAnswer(
-            answer="Sending your voice recap 🎙",
+            answer="Sending your voice note 🎙",
             confidence="high",
             evidence=[],
             deliver_voice_recap=True,
