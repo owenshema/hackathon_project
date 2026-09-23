@@ -52,8 +52,10 @@ CLARIFY_PATTERNS = [
 _COMPILED = [re.compile(p, re.I) for p in CLARIFY_PATTERNS]
 
 GREETING_PATTERNS = [
-    r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you|ok|okay)\s*[!.]*\s*$",
-    r"^\s*(hi|hello|hey)\s+(everyone|team|guys|all)\s*[!.]*\s*$",
+    r"^\s*(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you|ok|okay|yo|sup|hiya)\s*[!.]*\s*$",
+    r"^\s*(hi|hello|hey)\s+(everyone|team|guys|all|there|bot)\s*[!.]*\s*$",
+    r"^\s*(how are you|how's it going|how are you doing)\s*[?!.]*\s*$",
+    r"^\s*(gm|gn|good night)\s*[!.]*\s*$",
 ]
 
 IMPORTANT_UNANSWERED_PATTERNS = [

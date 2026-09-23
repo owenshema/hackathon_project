@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.schemas.memory import CatchUpResponse, MemoryAnswer, Platform
+from app.services.clarification import is_greeting_or_smalltalk
 from app.services.commands import parse_command
 from app.services.extraction import catch_me_up
 from app.services.rag import answer_question, list_decisions
@@ -16,6 +17,25 @@ from app.services.voice_recap import (
     get_saved_voice_answer,
     is_voice_recap_request,
 )
+
+
+def _greeting_reply(user_name: str | None = None) -> MemoryAnswer:
+    first = ""
+    if user_name:
+        first = user_name.strip().split()[0].strip("():,~")
+        if first.lower() in {"bot", "unknown"} or "bot" in first.lower():
+            first = ""
+    hello = f"Hey {first}!" if first else "Hey!"
+    return MemoryAnswer(
+        answer=(
+            f"{hello} I'm *JOTDS bot* 😊 Ask me about deadlines, sessions, "
+            "decisions, links, or say *catch me up* — I'll answer from this "
+            "group's memory, not guesses."
+        ),
+        confidence="high",
+        evidence=[],
+        command="greet",
+    )
 
 
 def _author_mention(author: str | None) -> str:
@@ -141,6 +161,11 @@ async def handle_user_message(
     text_clean = re.sub(r'\b(can you|could you|please)\s+a\s+', r'\1 ', text, flags=re.I)
     # Also handle bare "a tag" / "a tell" at start of sentence
     text_clean = re.sub(r'\ba\s+(tag|tell|ask|remind|notify|ping)\b', r'\1', text_clean, flags=re.I)
+
+    # Pure greetings never go through RAG (avoids "I don't have that in memory").
+    if is_greeting_or_smalltalk(text_clean) or is_greeting_or_smalltalk(text):
+        greet = _greeting_reply(user_name)
+        return greet, format_answer_for_platform(greet, platform)
 
     # Voice delivery must run before RAG so phrases like "give me this as a
     # voice message" are never answered as a capability question.
