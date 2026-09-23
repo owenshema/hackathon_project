@@ -71,7 +71,7 @@ async def set_webhook(base_url: str):
             payload = {
                 "name": "UniPods WhatsApp Bot",
                 "url": webhook_url,
-                "events": ["message:in:new"],
+                "events": ["message:in:new", "group:update"],
             }
             if DEVICE_ID:
                 payload["device"] = DEVICE_ID

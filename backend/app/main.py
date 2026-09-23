@@ -32,6 +32,12 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:
         print(f"[Startup] Warning: startup self-sync failed (non-fatal): {exc}")
 
+    try:
+        from app.services.group_welcome import ensure_group_update_webhook
+        await ensure_group_update_webhook()
+    except Exception as exc:
+        print(f"[Startup] Warning: could not update Wassenger webhook events: {exc}")
+
     yield
 
 

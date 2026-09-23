@@ -43,7 +43,7 @@ async def platforms_status(request: Request):
                 "Run: ngrok http 8000",
                 "In Wassenger console → Webhooks → add URL:",
                 f"  {base}/api/v1/webhooks/whatsapp  (use your ngrok https URL)",
-                "Subscribe to event: message:in:new",
+                "Subscribe to events: message:in:new, group:update",
                 "Message the connected WhatsApp number and ask a question",
             ],
         },

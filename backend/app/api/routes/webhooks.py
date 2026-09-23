@@ -22,6 +22,11 @@ from app.services.voice_recap import (
     synthesize_voice_note,
 )
 from app.services.group_recap import maybe_send_group_recaps
+from app.services.group_welcome import (
+    bot_was_added_to_group,
+    extract_group_id,
+    maybe_send_group_welcome,
+)
 from app.services.ingestion import ingest_messages
 from app.services.response_router import handle_user_message
 
@@ -123,6 +128,16 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
     adapter: WhatsAppAdapter = get_adapter(Platform.WHATSAPP)  # type: ignore[assignment]
     bot_phone = _normalize_phone(settings.wassenger_phone)
 
+    if bot_was_added_to_group(payload):
+        group_id = extract_group_id(payload)
+        if group_id:
+            async with SessionLocal() as db:
+                await maybe_send_group_welcome(
+                    db, adapter, conversation_id=group_id, payload=payload
+                )
+        if str(payload.get("event") or "") == "group:update":
+            return
+
     messages = adapter.normalize_inbound(payload)
     if not messages:
         return
@@ -166,6 +181,15 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     continue
 
                 is_group = bool((msg.metadata or {}).get("is_group"))
+                if is_group and bot_was_added_to_group(payload):
+                    await maybe_send_group_welcome(
+                        db,
+                        adapter,
+                        conversation_id=msg.conversation_id,
+                        payload=payload,
+                    )
+                    continue
+
                 text, was_mentioned = check_and_strip_bot_mention(
                     msg.text,
                     bot_names=["Unipod", "UniPods", "Memory", "JOTDS", "bot", "joe", "Joe", "meti", "meti_bot", "Meti", "The Palm", "Palm"],
@@ -324,8 +348,8 @@ async def whatsapp_webhook(
     event = payload.get("event")
     print(f"[WhatsApp Webhook] event={event}")
 
-    # Ignore non-message events
-    if event and event != "message:in:new" and "entry" not in payload:
+    allowed = {None, "", "message:in:new", "group:update"}
+    if event and event not in allowed and "entry" not in payload:
         return {"status": "ignored", "event": event}
 
     # Guard against Wassenger retry floods from tunnel downtime.

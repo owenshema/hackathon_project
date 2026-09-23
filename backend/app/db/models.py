@@ -184,3 +184,17 @@ class VoiceAnswer(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class GroupWelcome(Base):
+    """One intro message per WhatsApp group after the bot is added."""
+
+    __tablename__ = "group_welcomes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

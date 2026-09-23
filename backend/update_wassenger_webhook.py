@@ -25,7 +25,7 @@ async def main() -> None:
     payload = {
         "name": "UniPods WhatsApp Bot",
         "url": webhook_url,
-        "events": ["message:in:new"],
+        "events": ["message:in:new", "group:update"],
     }
 
     async with httpx.AsyncClient(timeout=20.0) as client:
