@@ -38,9 +38,9 @@ class Settings(BaseSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "deepseek-ai/deepseek-v4.1-flash"
 
-    # Speed knobs — WhatsApp/Teams need sub-~15s replies
-    llm_timeout_seconds: float = 25.0
-    llm_max_tokens: int = 400
+    # Speed knobs — WhatsApp/Teams need reliable LLM completion
+    llm_timeout_seconds: float = 60.0
+    llm_max_tokens: int = 800
     llm_retries: int = 1
     use_local_embeddings: bool = False
     # Webhooks are acknowledged before processing, so prioritize full evidence
