@@ -46,17 +46,36 @@ async def generate_json(
     *,
     fast: bool = False,
 ) -> dict[str, Any]:
-    text = await generate(prompt, system, fast=fast)
-    text = text.strip()
+    # Force structured output so free-text NVIDIA replies cannot be treated as grounded answers.
+    json_prompt = (
+        f"{prompt.rstrip()}\n\n"
+        "Respond with ONE JSON object only (no markdown fences, no extra text) using keys: "
+        'answer (string), confidence ("high"|"medium"|"insufficient"), '
+        "decision (string|null), reason (string|null), evidence_indices (array of integers). "
+        'If the evidence does not clearly answer the exact question, set confidence to '
+        '"insufficient", answer to a short refusal, and evidence_indices to [].'
+    )
+    text = await generate(json_prompt, system, fast=fast)
+    text = (text or "").strip()
     if "```json" in text:
         text = text.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in text:
         text = text.split("```", 1)[1].split("```", 1)[0].strip()
 
+    def _insufficient(answer: str | None = None) -> dict[str, Any]:
+        return {
+            "answer": answer
+            or "I couldn't find that in the shared group chats yet.",
+            "confidence": "insufficient",
+            "decision": None,
+            "reason": None,
+            "evidence_indices": [],
+        }
+
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            return data
+            return _normalize_llm_json(data)
     except json.JSONDecodeError:
         pass
 
@@ -67,19 +86,47 @@ async def generate_json(
         try:
             data = json.loads(text[start : end + 1])
             if isinstance(data, dict):
-                return data
+                return _normalize_llm_json(data)
         except json.JSONDecodeError:
             pass
 
-    if text and not text.startswith("{"):
-        return {
-            "answer": text,
-            "confidence": "medium",
-            "evidence_indices": [0],
-        }
+    # NEVER invent evidence_indices for free-text — that caused off-topic hallucinations.
+    print(f"[LLM] JSON parse failed; refusing ungrounded free-text ({len(text)} chars)")
+    return _insufficient()
 
-    # Last resort fallback if parsing completely fails
-    return json.loads(_offline_fallback(prompt))
+
+def _normalize_llm_json(data: dict[str, Any]) -> dict[str, Any]:
+    """Clamp LLM JSON so missing/invalid fields cannot invent grounding."""
+    confidence = str(data.get("confidence") or "insufficient").lower().strip()
+    if confidence in {"low", "none", "unknown", ""}:
+        confidence = "insufficient"
+    if confidence not in {"high", "medium", "insufficient"}:
+        confidence = "insufficient"
+
+    indices = data.get("evidence_indices")
+    if not isinstance(indices, list):
+        indices = []
+    clean_indices = [i for i in indices if isinstance(i, int) and i >= 0]
+
+    answer = data.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        confidence = "insufficient"
+        answer = "I couldn't find that in the shared group chats yet."
+        clean_indices = []
+
+    # Medium/high without any cited evidence is ungrounded — refuse.
+    if confidence != "insufficient" and not clean_indices:
+        confidence = "insufficient"
+        clean_indices = []
+        answer = "I couldn't find that in the shared group chats yet."
+
+    return {
+        "answer": answer.strip(),
+        "confidence": confidence,
+        "decision": data.get("decision"),
+        "reason": data.get("reason"),
+        "evidence_indices": clean_indices,
+    }
 
 
 async def _nvidia(
@@ -138,12 +185,17 @@ async def _nvidia(
                 json_match = _re.search(r"\{[\s\S]*\}", reasoning)
                 if json_match:
                     return json_match.group(0)
-                # If no JSON found, wrap the reasoning conclusion in JSON form
-                # Find the last non-empty sentence as the answer
-                lines = [l.strip() for l in reasoning.strip().split("\n") if l.strip()]
-                answer_line = lines[-1] if lines else reasoning.strip()
+                # Do not invent medium-confidence grounding from raw reasoning text.
                 import json as _json
-                return _json.dumps({"answer": answer_line, "confidence": "medium", "decision": None, "reason": None, "evidence_indices": []})
+                return _json.dumps(
+                    {
+                        "answer": "I couldn't find that in the shared group chats yet.",
+                        "confidence": "insufficient",
+                        "decision": None,
+                        "reason": None,
+                        "evidence_indices": [],
+                    }
+                )
             return ""
     if last_error:
         raise last_error
