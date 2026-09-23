@@ -35,6 +35,7 @@ CLARIFY_PATTERNS = [
     r"\bcatch me up\b",
     r"\bvoice\s*(?:recap|note|message)\b",
     r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\b",
+    r"\bgive\s+(?:me\s+)?(?:this|that|it)\s+as\s+(?:a\s+)?voice\b",
     r"\bwhat did i miss\b",
     r"\banyone know\b",
     r"\bdoes anyone (know|remember)\b",

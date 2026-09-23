@@ -219,10 +219,6 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     )
 
                 try:
-                    # A voice request should produce the audio itself, not a
-                    # separate "Sending your voice recap" text message first.
-                    # Keep a short text fallback only when TTS or media
-                    # delivery fails.
                     if (
                         isinstance(result, MemoryAnswer)
                         and result.deliver_voice_recap
@@ -230,16 +226,22 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     ):
                         audio_path = await synthesize_voice_note(result.voice_recap_script)
                         if audio_path:
+                            await adapter.send_reply(
+                                conversation_id=msg.conversation_id,
+                                text="Sending voice message 🎙",
+                                reply_to_id=msg.external_id,
+                                metadata=msg.metadata,
+                            )
                             voice_delivery = await adapter.send_attachment(
                                 conversation_id=msg.conversation_id,
                                 file_path=str(audio_path),
                                 caption="",
-                                display_filename="voice-recap.mp3",
+                                display_filename="voice-message.mp3",
                                 reply_to_id=msg.external_id,
                                 metadata=msg.metadata,
                             )
                             print(
-                                "[WhatsApp] Voice recap "
+                                "[WhatsApp] Voice message "
                                 f"ok={voice_delivery.get('ok')} mode={voice_delivery.get('mode')}"
                             )
                             if voice_delivery.get("ok"):

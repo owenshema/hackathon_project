@@ -54,6 +54,7 @@ def _with_whatsapp_voice_offer(
         or platform != Platform.WHATSAPP
         or not (text or "").strip()
         or "Want this as a voice note" in text
+        or "Want this as a voice message" in text
         or "Want these messages as a voice note" in text
     ):
         return text
@@ -70,7 +71,6 @@ def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
             text = text[:3490] + "…"
         skip_offer = (
             answer.deliver_voice_recap
-            or answer.confidence == "insufficient"
             or "read aloud" in text.lower()
         )
         return _with_whatsapp_voice_offer(text, platform, skip=skip_offer)
@@ -134,6 +134,39 @@ async def handle_user_message(
     text_clean = re.sub(r'\b(can you|could you|please)\s+a\s+', r'\1 ', text, flags=re.I)
     # Also handle bare "a tag" / "a tell" at start of sentence
     text_clean = re.sub(r'\ba\s+(tag|tell|ask|remind|notify|ping)\b', r'\1', text_clean, flags=re.I)
+
+    # Voice delivery must run before RAG so phrases like "give me this as a
+    # voice message" are never answered as a capability question.
+    if is_voice_recap_request(text) or is_voice_recap_request(text_clean):
+        script = await get_saved_voice_answer(db, user_id, conversation_id)
+        if not script:
+            recap = await catch_me_up(
+                db,
+                user_id,
+                user_name=user_name,
+                conversation_id=conversation_id,
+                exclude_message_ids=exclude_message_ids,
+            )
+            script = catchup_to_voice_script(recap)
+            cache_catchup_script(user_id, conversation_id, script)
+        if not script.strip():
+            empty = MemoryAnswer(
+                answer=(
+                    "I don't have a recent reply to read aloud yet. "
+                    "Ask me something first, then reply *give me this as a voice message*."
+                ),
+                confidence="high",
+                evidence=[],
+            )
+            return empty, format_answer_for_platform(empty, platform)
+        voice_answer = MemoryAnswer(
+            answer="Sending voice message 🎙",
+            confidence="high",
+            evidence=[],
+            deliver_voice_recap=True,
+            voice_recap_script=script,
+        )
+        return voice_answer, format_answer_for_platform(voice_answer, platform)
 
     # ── Pin message handler ──────────────────────────────────────────────────
     pin_match = re.search(
@@ -285,39 +318,6 @@ async def handle_user_message(
     cmd = parsed.command or "ask"
     query = parsed.query or text
     fast = platform in {Platform.WHATSAPP, Platform.TEAMS} and settings.platform_fast_mode
-
-    if is_voice_recap_request(text):
-        # Prefer the user's last actual answer in this chat.  This lets every
-        # answer be read aloud, including after the web service has restarted.
-        script = await get_saved_voice_answer(db, user_id, conversation_id)
-        if not script:
-            recap = await catch_me_up(
-                db,
-                user_id,
-                user_name=user_name,
-                conversation_id=conversation_id,
-                exclude_message_ids=exclude_message_ids,
-            )
-            script = catchup_to_voice_script(recap)
-            cache_catchup_script(user_id, conversation_id, script)
-        if not script.strip():
-            empty = MemoryAnswer(
-                answer=(
-                    "I don't have a recent reply to read aloud yet. "
-                    "Ask me something first, then reply *send the voice message*."
-                ),
-                confidence="high",
-                evidence=[],
-            )
-            return empty, format_answer_for_platform(empty, platform)
-        voice_answer = MemoryAnswer(
-            answer="Sending your voice note 🎙",
-            confidence="high",
-            evidence=[],
-            deliver_voice_recap=True,
-            voice_recap_script=script,
-        )
-        return voice_answer, format_answer_for_platform(voice_answer, platform)
 
     if cmd == "catchup":
         recap = await catch_me_up(

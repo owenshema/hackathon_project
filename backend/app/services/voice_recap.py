@@ -16,15 +16,23 @@ from app.db.models import VoiceAnswer
 from app.schemas.memory import CatchUpResponse
 
 VOICE_RECAP_OFFER_WHATSAPP = (
-    "\n\n🎙 Want this as a voice note? Reply *send the voice message*."
+    "\n\n🎙 Want this as a voice message? Reply *give me this as a voice message*."
 )
 
 _VOICE_OFFER_STRIP = re.compile(
-    r"(?:🎙\s*)?Want (?:this|these messages) as a voice note\?.*$",
+    r"(?:🎙\s*)?Want (?:this|these messages) as a voice (?:note|message)\?.*$",
     re.I | re.S,
 )
 
 VOICE_RECAP_TTL_SECONDS = 3600
+
+_VOICE_QUESTION_PATTERNS = [
+    re.compile(
+        r"\b(?:can|do|does|could)\s+you\s+(?:understand|transcribe|hear|listen(?:\s+to)?)\b.*\bvoice\b",
+        re.I,
+    ),
+    re.compile(r"\bwhat\s+is\s+a\s+voice\s+(?:message|note)\b", re.I),
+]
 
 _VOICE_RECAP_PATTERNS = [
     re.compile(r"\bvoice\s*recap\b", re.I),
@@ -33,7 +41,14 @@ _VOICE_RECAP_PATTERNS = [
     re.compile(r"\bvn\b", re.I),
     re.compile(r"\bcan\s+(?:it|this)\s+be\s+(?:the\s+)?vn\b", re.I),
     re.compile(r"\bsend\s+(?:me\s+)?(?:a\s+)?voice\b", re.I),
-    re.compile(r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\s+(?:message|note)\b", re.I),
+    re.compile(r"\bsend\s+(?:me\s+)?(?:the\s+)?(?:a\s+)?voice\s+(?:message|note)\b", re.I),
+    re.compile(
+        r"\b(?:give|send|share)\s+(?:me\s+)?(?:this|that|it)?\s*(?:as|in)\s+(?:a\s+)?(?:voice|audio)\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:this|that|it)\s+as\s+(?:a\s+)?(?:voice|audio)\b", re.I),
+    re.compile(r"\bas\s+a\s+voice\s+(?:message|note)\b", re.I),
+    re.compile(r"\bvoice\s+message\b", re.I),
     re.compile(r"\baudio\s+recap\b", re.I),
     re.compile(r"\bread\s+(?:it|this|the\s+summary)\s+(?:out|aloud|to\s+me)\b", re.I),
     re.compile(
@@ -134,7 +149,10 @@ async def get_saved_voice_answer(
 
 def is_voice_recap_request(text: str) -> bool:
     raw = (text or "").strip()
+    raw = re.sub(r"^@\S+\s+", "", raw)
     if not raw:
+        return False
+    if any(p.search(raw) for p in _VOICE_QUESTION_PATTERNS):
         return False
     return any(p.search(raw) for p in _VOICE_RECAP_PATTERNS)
 

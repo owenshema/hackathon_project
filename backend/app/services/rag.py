@@ -32,6 +32,10 @@ YOUR PERSONALITY & TONE (EXACTLY AS METI_BOT):
   * If the user writes in Hausa, Arabic, Swahili, Portuguese, or another language, respond in that language.
   * If asked to translate, provide accurate, clean translations immediately.
 
+CAPABILITIES:
+- You CAN send a spoken voice note of your last answer. Never say you are text-only, cannot record, or cannot send voice messages. Those requests are handled by the app, not by this JSON answer.
+- You cannot transcribe incoming user voice notes yet. If asked that, say you can speak your last answer aloud, but you cannot yet understand a voice note they send you.
+
 CORE PROGRAMME KNOWLEDGE & CANONICAL FACTS:
 1. Four Main Tracks:
    - Track 1: MIT Universal AI — self-paced foundational AI skills (Python, data analysis, ML, GenAI). 16 foundational modules are compulsory; vertical modules are optional. 100% free via program waiver (no payment or coupon code needed if accessed via the invite link). Enrolment is via individual link sent to applicant email from "MIT Learn". Only the applicant is officially enrolled and named on the certificate, but login credentials can be shared with team members so everyone learns. To view modules, click Dashboard (top-right), NOT Home. Support: uaisupport@mit.edu. Expected completion date: 18 October 2026.
@@ -60,9 +64,11 @@ CORE PROGRAMME KNOWLEDGE & CANONICAL FACTS:
    - Programme Email: unipods.regional@undp.org | Coordinator: Diane (+250 783 188 655) | MIT Support: uaisupport@mit.edu
 
 STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
+- Use WhatsApp bold as *word*. Never use **double asterisks**.
+- Answer only from CORE PROGRAMME KNOWLEDGE or the evidence items. Do not invent dates, partners, policies, names, or bot capabilities.
+- If the evidence does not answer the question and it is not a CORE PROGRAMME fact, say you could not find that in the shared group chats yet. Do not guess.
 - NEVER output citation codes, message indexes, or database markers like "(M389)", "(K74)", "(K109)", or "Answered before by...".
 - NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person.
-- NEVER loop robotic refusal phrases like "I don't have that in the programme materials, so I'd rather not guess."
 - If an issue requires official admin approval or personal assistance (e.g. late team declaration approval, testing slot booking, individual login errors), provide the known policy warmly and direct them to contact Diane (+250 783 188 655) or email unipods.regional@undp.org.
 
 Return JSON with keys:
@@ -733,6 +739,8 @@ async def answer_question(
         confidence = "high" if confidence_raw >= 0.7 else ("medium" if confidence_raw >= 0.4 else "insufficient")
     else:
         confidence = str(confidence_raw).lower()
+    if confidence in {"insufficient", "low"}:
+        confidence = "insufficient"
 
     indices = data.get("evidence_indices") or []
     if not isinstance(indices, list):
@@ -754,21 +762,14 @@ async def answer_question(
 
     answer_text = data.get("answer") or ""
 
-    # If LLM returned a note="extractive-match", the answer is the raw best-chunk content — use it directly
-    # If LLM set confidence to insufficient, check if we still got a real answer_text worth returning
-    if confidence == "insufficient":
-        if answer_text and len(answer_text) > 30 and "couldn't" not in answer_text.lower():
-            # LLM still gave a real answer even with low confidence — trust it
-            confidence = "medium"
-            if chunks:
-                evidence = [evidence_from_chunk(chunks[0])]
-        else:
-            evidence = []
-            answer_text = (
-                "I couldn't find that in the shared group chats yet."
-                if require_evidence
-                else "I couldn't find enough evidence to answer that."
-            )
+    if confidence in {"insufficient", "low"}:
+        evidence = []
+        answer_text = (
+            "I couldn't find that in the shared group chats yet."
+            if require_evidence
+            else "I couldn't find enough evidence to answer that."
+        )
+        confidence = "insufficient"
     elif not answer_text or len(answer_text) < 5:
         # LLM returned empty answer — use the top evidence chunk as extractive answer
         if chunks:
