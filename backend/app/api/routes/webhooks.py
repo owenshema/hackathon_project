@@ -275,10 +275,7 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     and _should_thank_share(msg.conversation_id, msg.author_id)
                 ):
                     mention = _share_author_mention(msg.author_name)
-                    thanks = (
-                        f"Thanks {mention} for sharing this 🙌 "
-                        "I've saved it in the group memory."
-                    )
+                    thanks = f"Thanks {mention} for sharing this 🙌"
                     try:
                         await adapter.send_reply(
                             conversation_id=msg.conversation_id,
