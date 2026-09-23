@@ -14,6 +14,7 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
+    is_external_bot_author,
     needs_clarification,
 )
 from app.services.voice_recap import (
@@ -177,6 +178,13 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                 # Skip bot's own echoed outbound messages
                 author_digits = _normalize_phone(msg.author_id)
                 if bot_phone and author_digits and author_digits == bot_phone:
+                    continue
+
+                # Never reply to other bots in the group (names like "SPARK BOT").
+                if is_external_bot_author(msg.author_name):
+                    print(
+                        f"[WhatsApp] Skipping reply to bot author: {msg.author_name!r}"
+                    )
                     continue
 
                 is_group = bool((msg.metadata or {}).get("is_group"))
@@ -390,6 +398,8 @@ async def teams_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     await ingest_messages(db, messages)
     replies = 0
     for msg in messages:
+        if is_external_bot_author(msg.author_name):
+            continue
         if not needs_clarification(msg.text, is_group=False):
             continue
         _result, formatted = await handle_user_message(

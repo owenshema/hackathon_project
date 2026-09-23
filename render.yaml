@@ -12,3 +12,6 @@ services:
         value: production
       - key: USE_PGVECTOR
         value: "false"
+      # Programme dates are Africa/CAT (UTC+2). Oregon hosts are UTC.
+      - key: TZ
+        value: Africa/Maputo

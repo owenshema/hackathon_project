@@ -26,30 +26,37 @@ _VOICE_OFFER_STRIP = re.compile(
 
 VOICE_RECAP_TTL_SECONDS = 3600
 
+# Questions *about* voice notes must never trigger TTS delivery.
 _VOICE_QUESTION_PATTERNS = [
     re.compile(
         r"\b(?:can|do|does|could)\s+you\s+(?:understand|transcribe|hear|listen(?:\s+to)?)\b.*\bvoice\b",
         re.I,
     ),
     re.compile(r"\bwhat\s+is\s+a\s+voice\s+(?:message|note)\b", re.I),
+    re.compile(
+        r"\b(?:what|who|when|where|why|how|which|did|does|is|are|was|were)\b.{0,80}\bvoice\s*(?:message|note|recap)?\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bvoice\s*(?:message|note|recap)\b.{0,80}\b(?:mean|about|from|by|say|said|contain)\b",
+        re.I,
+    ),
 ]
 
+# Only clear "please send/read this as audio" intents — never a bare "voice message" keyword.
 _VOICE_RECAP_PATTERNS = [
     re.compile(r"\bvoice\s*recap\b", re.I),
-    re.compile(r"\bvoicenote\b", re.I),
-    re.compile(r"\bvoice\s*note\b", re.I),
-    re.compile(r"\bvn\b", re.I),
+    re.compile(r"\baudio\s+recap\b", re.I),
     re.compile(r"\bcan\s+(?:it|this)\s+be\s+(?:the\s+)?vn\b", re.I),
-    re.compile(r"\bsend\s+(?:me\s+)?(?:a\s+)?voice\b", re.I),
-    re.compile(r"\bsend\s+(?:me\s+)?(?:the\s+)?(?:a\s+)?voice\s+(?:message|note)\b", re.I),
+    re.compile(r"^\s*(?:vn|voicenote)\s*[!.?]*\s*$", re.I),
+    re.compile(r"\bsend\s+(?:me\s+)?(?:a\s+|the\s+)?voice(?:\s+(?:message|note))?\b", re.I),
+    re.compile(r"\bsend\s+(?:me\s+)?(?:a\s+|the\s+)?(?:voice|audio)\s+(?:message|note|recap)\b", re.I),
     re.compile(
         r"\b(?:give|send|share)\s+(?:me\s+)?(?:this|that|it)?\s*(?:as|in)\s+(?:a\s+)?(?:voice|audio)\b",
         re.I,
     ),
-    re.compile(r"\b(?:this|that|it)\s+as\s+(?:a\s+)?(?:voice|audio)\b", re.I),
+    re.compile(r"\b(?:this|that|it)\s+as\s+(?:a\s+)?(?:voice|audio)(?:\s+(?:message|note))?\b", re.I),
     re.compile(r"\bas\s+a\s+voice\s+(?:message|note)\b", re.I),
-    re.compile(r"\bvoice\s+message\b", re.I),
-    re.compile(r"\baudio\s+recap\b", re.I),
     re.compile(r"\bread\s+(?:it|this|the\s+summary)\s+(?:out|aloud|to\s+me)\b", re.I),
     re.compile(
         r"\bread\s+(?:(?:that|this|the|my|your)\s+)?(?:last\s+)?(?:[\w-]+\s+){0,5}answer\s+(?:out|aloud|to\s+me)\b",

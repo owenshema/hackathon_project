@@ -16,7 +16,13 @@ from app.db.models import Chunk, Decision, Message
 from app.schemas.memory import EvidenceItem, MemoryAnswer
 from app.services.embeddings import embed_texts
 from app.services.evidence import evidence_from_chunk, evidence_from_message
+from app.services.extraction import GROUP_TIMEZONE
 from app.services.llm import generate_json
+
+
+def _today_cat():
+    """Programme dates are in CAT; Render hosts run UTC so never use naive local date."""
+    return datetime.now(GROUP_TIMEZONE).date()
 
 SYSTEM_PROMPT = """You are the official UniPods METI AI Assistant Bot (in this cohort known as our community bot / meti_bot) for the UniPods METI AI Innovation Programme 2026 Cohort (supported by METI, UNDP, and timbuktoo).
 
@@ -65,10 +71,13 @@ CORE PROGRAMME KNOWLEDGE & CANONICAL FACTS:
 
 STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
 - Use WhatsApp bold as *word*. Never use **double asterisks**.
-- Answer only from CORE PROGRAMME KNOWLEDGE or the evidence items. Do not invent dates, partners, policies, names, or bot capabilities.
-- If the evidence does not answer the question and it is not a CORE PROGRAMME fact, say you could not find that in the shared group chats yet. Do not guess.
+- Read the user's question carefully. Answer ONLY that question. Do not volunteer unrelated programme facts, dates, or capabilities.
+- Use CORE PROGRAMME KNOWLEDGE only when the user clearly asked about that exact programme topic. Prefer group evidence when both exist.
+- If the evidence does not answer the question and it is not a clearly matching CORE PROGRAMME fact, set confidence to "insufficient". Do not guess.
+- NEVER invent or shift dates, times, partners, policies, names, or bot capabilities.
 - NEVER mix dates or times from different events. A date from one session and a time from another is always wrong.
 - For when/date/time questions: quote only the date and time that appear together in the same evidence item for the named event. If that pair is missing, set confidence to "insufficient".
+- Compare dates against "Today" in the user prompt (Africa/CAT). Say clearly if a date has already passed or is still upcoming.
 - Do not reuse CORE PROGRAMME dates unless the user named that exact programme item (MIT, Wadhwani, Open Hours, bootcamp, workshop).
 - NEVER output citation codes, message indexes, or database markers like "(M389)", "(K74)", "(K109)", or "Answered before by...".
 - NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person.
@@ -383,7 +392,7 @@ def _answer_from_dated_evidence(
         ]:
             return None
     when = " at ".join(stamps[:2]) if len(stamps) > 1 else stamps[0]
-    today = datetime.now().date()
+    today = _today_cat()
     passed = ""
     year_match = re.search(r"\b(20\d{2})\b", " ".join(stamps))
     month_day = _DATE_RE.search(" ".join(stamps)) or _DATE_RE.search(chunk.content or "")
@@ -894,7 +903,7 @@ async def answer_question(
         mode_hint = "Focus only on action items / tasks."
 
     prompt = (
-        f"Today: {datetime.now().date().isoformat()}\n"
+        f"Today (CAT / Africa UTC+2): {_today_cat().isoformat()}\n"
         f"Question: {question}\n{mode_hint}\n\n"
         f"Question type: {'official/high-stakes' if high_stakes else 'general'}\n"
         f"Instruction: Answer ONLY the specific question '{question}'. Do not give a general program overview or list other tracks.\n"
@@ -903,7 +912,7 @@ async def answer_question(
         "(leaders/admins or official documents).\n\n"
         "Use every relevant evidence item below before answering. If the evidence mentions "
         "unread or pending media/transcription, say that clearly instead of inferring its contents. "
-        "If the evidence contains dates or deadlines, compare them with today's date and clearly "
+        "If the evidence contains dates or deadlines, compare them with today's CAT date and clearly "
         "say when something has already passed. Use evidence timestamps to interpret relative dates "
         'like "today", "tomorrow", and "yesterday". Never attach a time from one evidence item '
         "to a date from another item.\n"

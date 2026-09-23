@@ -33,9 +33,11 @@ CLARIFY_PATTERNS = [
     r"\bhave we (agreed|decided|chosen)\b",
     r"\balready (discussed|decided|said|agreed)\b",
     r"\bcatch me up\b",
-    r"\bvoice\s*(?:recap|note|message)\b",
-    r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\b",
-    r"\bgive\s+(?:me\s+)?(?:this|that|it)\s+as\s+(?:a\s+)?voice\b",
+    # Only treat clear TTS delivery requests as actionable — not mentions of voice notes.
+    r"\b(?:send|give|share)\s+(?:me\s+)?(?:this|that|it|a|the)?\s*(?:as\s+)?(?:a\s+)?(?:voice|audio)\b",
+    r"\b(?:this|that|it)\s+as\s+(?:a\s+)?(?:voice|audio)\b",
+    r"\bvoice\s*recap\b",
+    r"\baudio\s+recap\b",
     r"\bwhat did i miss\b",
     r"\banyone know\b",
     r"\bdoes anyone (know|remember)\b",
@@ -72,6 +74,23 @@ CURIOSITY_PATTERNS = [
 _GREETINGS = [re.compile(p, re.I) for p in GREETING_PATTERNS]
 _IMPORTANT_UNANSWERED = [re.compile(p, re.I) for p in IMPORTANT_UNANSWERED_PATTERNS]
 _CURIOSITY = [re.compile(p, re.I) for p in CURIOSITY_PATTERNS]
+
+
+def is_external_bot_author(author_name: str | None) -> bool:
+    """True when the sender looks like another WhatsApp bot (e.g. SPARK BOT)."""
+    name = (author_name or "").strip().lower()
+    if not name:
+        return False
+    if re.search(r"\bbot\b", name):
+        return True
+    known_bot_markers = (
+        "meti_bot",
+        "podpal",
+        "askback",
+        "wise-bot",
+        "wise bot",
+    )
+    return any(marker in name for marker in known_bot_markers)
 
 
 def is_greeting_or_smalltalk(text: str) -> bool:
