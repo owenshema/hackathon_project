@@ -17,16 +17,19 @@ WASSENGER_API = "https://api.wassenger.com/v1"
 WASSENGER_EVENTS = ["message:in:new", "group:update"]
 
 GROUP_WELCOME_TEXT = (
-    "👋 Hi everyone — I'm *Unipod_ai*, your UniPods group memory assistant.\n\n"
+    "👋 Hi everyone — I'm *JOTDS bot*, your UniPods group memory assistant "
+    "from team *JOTDS*.\n\n"
     "I follow this chat so you can ask what was said, decided, or missed "
     "instead of scrolling.\n\n"
     "*How I work*\n"
-    "1. Tag *@Unipod_ai* and ask a question "
+    "1. Tag *@JOTDS bot* and ask a question "
     "(deadlines, decisions, links, who said what).\n"
     "2. Ask me to *catch you up* for a recap of recent group activity.\n"
     "3. After any answer, reply *give me this as a voice message* "
     "and I will send that answer as audio.\n"
-    "4. If I do not have it in the group memory, I will say so rather than guess.\n\n"
+    "4. When someone shares useful info, I credit and tag them — "
+    "I will not invent answers.\n"
+    "5. If I do not have it in the group memory, I will say so rather than guess.\n\n"
     "That's it — tag me anytime."
 )
 
@@ -163,7 +166,7 @@ async def ensure_group_update_webhook() -> None:
             merged = list(dict.fromkeys([*events, *WASSENGER_EVENTS]))
             hook_id = hook.get("id")
             payload = {
-                "name": hook.get("name") or "UniPods WhatsApp Bot",
+                "name": hook.get("name") or "JOTDS bot",
                 "url": url,
                 "events": merged,
             }

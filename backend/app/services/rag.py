@@ -24,14 +24,19 @@ def _today_cat():
     """Programme dates are in CAT; Render hosts run UTC so never use naive local date."""
     return datetime.now(GROUP_TIMEZONE).date()
 
-SYSTEM_PROMPT = """You are the official UniPods METI AI Assistant Bot (in this cohort known as our community bot / meti_bot) for the UniPods METI AI Innovation Programme 2026 Cohort (supported by METI, UNDP, and timbuktoo).
+SYSTEM_PROMPT = """You are *JOTDS bot* — the WhatsApp group memory assistant built by team JOTDS (The Palm Solutions) for the UniPods METI AI Innovation Programme 2026 Cohort (supported by METI, UNDP, and timbuktoo).
 
-YOUR PERSONALITY & TONE (EXACTLY AS METI_BOT):
+IDENTITY (STRICT):
+- Your name is *JOTDS bot* only. Never call yourself meti_bot, Unipod_ai, Palm bot, or any other team's bot. Those are competitors or different products.
+- If asked who you are, say you are JOTDS bot from team JOTDS.
+
+YOUR PERSONALITY & TONE:
 - Direct, warm, welcoming, professional, and exceptionally helpful community assistant.
 - Answer the user's specific question directly in the very first sentence. Never use throat-clearing boilerplate like "Based on the evidence provided...", "According to the records...", or "As an AI assistant...".
 - Do NOT recite or list the four tracks or general programme overview unless the user specifically asks about the tracks, curriculum, or overview! Always address the exact topic asked.
 - Structure responses cleanly using bullet points or numbered steps, with WhatsApp markdown bolding (*text*) for dates, deadlines, names, key terms, and URLs.
 - Use natural, friendly emojis (😊, 🚀, 🙌, 🤖, 🌚, 🤞) appropriately to maintain an encouraging community atmosphere.
+- CREDIT PEOPLE: When evidence comes from an admin or group member who shared the info, thank them and include their WhatsApp @mention exactly as shown in the evidence line (e.g. "Thanks @Diane for sharing this 🙌"). Prefer quoting or summarizing what *they* said over inventing programme facts.
 - Multilingual agility:
   * If the user writes in French, respond entirely and fluently in French (e.g. "Bonjour ! ...", "Voici les informations...").
   * If the user writes in Sesotho, respond in Sesotho.
@@ -72,7 +77,8 @@ CORE PROGRAMME KNOWLEDGE & CANONICAL FACTS:
 STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
 - Use WhatsApp bold as *word*. Never use **double asterisks**.
 - Read the user's question carefully. Answer ONLY that question. Do not volunteer unrelated programme facts, dates, or capabilities.
-- Use CORE PROGRAMME KNOWLEDGE only when the user clearly asked about that exact programme topic. Prefer group evidence when both exist.
+- Prefer group evidence from real people over CORE PROGRAMME KNOWLEDGE. When a person shared the answer, credit and @tag them — do not restate it as if you invented it.
+- Use CORE PROGRAMME KNOWLEDGE only when the user clearly asked about that exact programme topic AND no matching group evidence exists.
 - If the evidence does not answer the question and it is not a clearly matching CORE PROGRAMME fact, set confidence to "insufficient". Do not guess.
 - NEVER invent or shift dates, times, partners, policies, names, or bot capabilities.
 - NEVER mix dates or times from different events. A date from one session and a time from another is always wrong.
@@ -80,7 +86,8 @@ STRICT ANTI-HALLUCINATION & ANTI-CLUTTER RULES:
 - Compare dates against "Today" in the user prompt (Africa/CAT). Say clearly if a date has already passed or is still upcoming.
 - Do not reuse CORE PROGRAMME dates unless the user named that exact programme item (MIT, Wadhwani, Open Hours, bootcamp, workshop).
 - NEVER output citation codes, message indexes, or database markers like "(M389)", "(K74)", "(K109)", or "Answered before by...".
-- NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person.
+- NEVER claim to be meti_bot or repeat another bot's identity.
+- NEVER repeat or quote fellow participants' chat banter, personal complaints, jokes, or names unless specifically asked about a person — except when thanking/tagging the person whose shared info you used.
 - If an issue requires official admin approval or personal assistance (e.g. late team declaration approval, testing slot booking, individual login errors), provide the known policy warmly and direct them to contact Diane (+250 783 188 655) or email unipods.regional@undp.org.
 
 Return JSON with keys:
@@ -107,7 +114,11 @@ def _author_mention(author: str | None) -> str:
     clean = author.strip()
     if clean.startswith("@"):
         return clean
-    first_name = clean.split()[0].strip("():,")
+    # Drop role suffixes like "Diane (Coordinator)"
+    clean = re.sub(r"\s*\([^)]*\)\s*", " ", clean).strip()
+    if " shared " in clean.lower():
+        clean = clean.split(" shared ", 1)[0].strip()
+    first_name = clean.split()[0].strip("():,~")
     known = {
         "joel": "@Joel",
         "joe": "@Joel",
@@ -116,8 +127,56 @@ def _author_mention(author: str | None) -> str:
         "deborah": "@Deborah",
         "kgosi": "@Kgosi",
         "reitumetse": "@Reitumetse",
+        "diane": "@Diane",
+        "gift": "@Gift",
+        "munira": "@Munira",
+        "jeovaire": "@Jeovaire",
+        "charles": "@Charles",
+        "shadrak": "@Shadrak",
     }
     return known.get(first_name.lower(), f"@{first_name}" if first_name else "@someone")
+
+
+def _credit_human_sources(answer_text: str, evidence: list[EvidenceItem]) -> str:
+    """Append a thank-you + @tag for people whose messages grounded the answer."""
+    text = (answer_text or "").strip()
+    if not text or not evidence:
+        return text
+
+    mentions: list[str] = []
+    seen: set[str] = set()
+    for ev in evidence:
+        author = (ev.author or "").strip()
+        if not author:
+            continue
+        lower = author.lower()
+        if "bot" in lower or "jotds" in lower:
+            continue
+        mention = _author_mention(author)
+        key = mention.lower()
+        if key in seen or mention == "@someone":
+            continue
+        seen.add(key)
+        # Already credited in the answer body
+        first = mention.lstrip("@").lower()
+        if mention.lower() in text.lower() or re.search(
+            rf"\b{re.escape(first)}\b", text, flags=re.I
+        ):
+            # Still ensure an @tag appears for WhatsApp notify
+            if mention not in text and f"@{first}" not in text.lower():
+                mentions.append(mention)
+            continue
+        mentions.append(mention)
+
+    if not mentions:
+        return text
+    if len(mentions) == 1:
+        credit = f"Thanks {mentions[0]} for sharing this 🙌"
+    else:
+        credit = f"Thanks {' & '.join(mentions)} for sharing this 🙌"
+    if credit.lower() in text.lower():
+        return text
+    return f"{text}\n\n{credit}"
 
 
 def _is_trusted_source(chunk: Chunk) -> bool:
@@ -424,7 +483,12 @@ def _answer_from_dated_evidence(
     excerpt = (chunk.content or "").strip()
     if len(excerpt) > 280:
         excerpt = excerpt[:277] + "…"
+    mention = _author_mention(chunk.author_name)
     answer = f"*{when}*.{passed}\n\n{excerpt}"
+    if chunk.author_name and "bot" not in (chunk.author_name or "").lower():
+        answer = _credit_human_sources(answer, [evidence_from_chunk(chunk)])
+    elif mention and mention != "@someone":
+        answer = f"{answer}\n\nThanks {mention} for sharing this 🙌"
     return MemoryAnswer(
         answer=answer[:1200],
         confidence="high",
@@ -916,6 +980,9 @@ async def answer_question(
         "say when something has already passed. Use evidence timestamps to interpret relative dates "
         'like "today", "tomorrow", and "yesterday". Never attach a time from one evidence item '
         "to a date from another item.\n"
+        "When an evidence author shared the info, thank them and include their @mention from the "
+        "evidence line (e.g. Thanks @Diane for sharing this). Do not invent facts they did not write.\n"
+        "You are JOTDS bot — never identify as meti_bot or any other team's bot.\n"
         "If no evidence item clearly answers the question, set confidence to insufficient.\n\n"
         f"Evidence:\n" + "\n".join(evidence_blocks) + "\n\n"
         "Respond with JSON only."
@@ -999,6 +1066,9 @@ async def answer_question(
     # Strip any raw evidence block that leaked into the answer (starts with "[0]" or "/ @")
     if answer_text.startswith("/ @") or (len(answer_text) > 4 and answer_text[1] == "/" and answer_text[0] == " "):
         answer_text = answer_text.split(")", 1)[-1].strip() if ")" in answer_text else answer_text
+
+    if confidence != "insufficient" and evidence:
+        answer_text = _credit_human_sources(answer_text, evidence)
 
     return MemoryAnswer(
         answer=answer_text,

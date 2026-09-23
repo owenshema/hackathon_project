@@ -15,8 +15,10 @@ from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
     is_external_bot_author,
+    is_informational_share,
     needs_clarification,
 )
+from app.core.group_profiles import is_group_admin
 from app.services.voice_recap import (
     save_voice_answer,
     synthesize_voice_note,
@@ -34,12 +36,48 @@ router = APIRouter()
 
 # In-memory guard against concurrent retries of the same message
 _in_flight: set[str] = set()
+# Avoid thanking the same sharer repeatedly in a short window
+_share_thanks_cooldown: dict[str, float] = {}
+_SHARE_THANKS_TTL_SECONDS = 20 * 60
 
 
 def _normalize_phone(value: str | None) -> str:
     if not value:
         return ""
     return "".join(ch for ch in value if ch.isdigit())
+
+
+def _share_author_mention(author_name: str | None) -> str:
+    clean = (author_name or "").strip()
+    if not clean:
+        return "@someone"
+    if clean.startswith("@"):
+        return clean
+    first = clean.split()[0].strip("():,~")
+    known = {
+        "diane": "@Diane",
+        "gift": "@Gift",
+        "munira": "@Munira",
+        "jeovaire": "@Jeovaire",
+        "charles": "@Charles",
+    }
+    return known.get(first.lower(), f"@{first}" if first else "@someone")
+
+
+def _should_thank_share(conversation_id: str, author_id: str) -> bool:
+    import time
+
+    key = f"{conversation_id}:{author_id}"
+    now = time.time()
+    # Drop expired entries lightly
+    expired = [k for k, ts in _share_thanks_cooldown.items() if now - ts > _SHARE_THANKS_TTL_SECONDS]
+    for k in expired:
+        _share_thanks_cooldown.pop(k, None)
+    last = _share_thanks_cooldown.get(key)
+    if last and now - last < _SHARE_THANKS_TTL_SECONDS:
+        return False
+    _share_thanks_cooldown[key] = now
+    return True
 
 
 ADMIN_MENTIONS = "@250782972679 (Shema) @250789201681 (Joel)"
@@ -200,17 +238,62 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                 text, was_mentioned = check_and_strip_bot_mention(
                     msg.text,
                     bot_names=[
-                        "Unipod_ai",
-                        "Unipod",
-                        "UniPods",
-                        "Memory",
-                        "meti_bot",
-                        "meti",
-                        "Meti",
+                        "JOTDS bot",
+                        "JOTDS_bot",
+                        "JOTDS",
+                        "jotds",
                         "The Palm",
                         "Palm",
                     ],
                 )
+
+                meta = msg.metadata or {}
+                has_media = bool(
+                    meta.get("has_media")
+                    or meta.get("media_url")
+                    or msg.media_url
+                    or (msg.media_mime and not str(msg.media_mime).startswith("text/"))
+                )
+
+                # Appreciate admins/members who share useful info instead of inventing.
+                if (
+                    is_group
+                    and not was_mentioned
+                    and is_informational_share(
+                        text, has_media=has_media, was_mentioned=False
+                    )
+                    and (
+                        is_group_admin(
+                            msg.conversation_id,
+                            author_id=msg.author_id,
+                            author_name=msg.author_name,
+                        )
+                        or has_media
+                        or "http://" in text.lower()
+                        or "https://" in text.lower()
+                    )
+                    and _should_thank_share(msg.conversation_id, msg.author_id)
+                ):
+                    mention = _share_author_mention(msg.author_name)
+                    thanks = (
+                        f"Thanks {mention} for sharing this 🙌 "
+                        "I've saved it in the group memory."
+                    )
+                    try:
+                        await adapter.send_reply(
+                            conversation_id=msg.conversation_id,
+                            text=thanks,
+                            reply_to_id=msg.external_id,
+                            metadata=msg.metadata,
+                        )
+                        print(f"[WhatsApp] Appreciated share from {msg.author_name!r}")
+                    except Exception as exc:
+                        print(f"[WhatsApp] Share thanks failed: {exc}")
+                    # Don't also run RAG on a share unless they asked us something.
+                    if not needs_clarification(
+                        text, is_group=True, was_mentioned=False
+                    ):
+                        continue
 
                 # In direct chats, the bot is the intended recipient, so answer any
                 # meaningful text instead of requiring a question-shaped message.

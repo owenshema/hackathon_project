@@ -39,6 +39,11 @@ def _author_mention(author: str | None) -> str:
         "deborah": "@Deborah",
         "kgosi": "@Kgosi",
         "reitumetse": "@Reitumetse",
+        "diane": "@Diane",
+        "gift": "@Gift",
+        "munira": "@Munira",
+        "jeovaire": "@Jeovaire",
+        "charles": "@Charles",
     }
     return known.get(first_name.lower(), f"@{first_name}" if first_name else "@someone")
 
@@ -62,10 +67,10 @@ def _with_whatsapp_voice_offer(
 
 
 def format_answer_for_platform(answer: MemoryAnswer, platform: Platform) -> str:
-    """Clean text suitable for WhatsApp / Teams, matching meti_bot style."""
+    """Clean text suitable for WhatsApp / Teams (JOTDS bot style)."""
     mobile = platform in {Platform.WHATSAPP, Platform.TEAMS}
     if mobile:
-        # Meti_bot delivers direct, clean answers without robotic evidence dumps
+        # Direct answers; human sources are credited inside the answer text.
         text = (answer.answer or "").strip()
         if len(text) > 3500:
             text = text[:3490] + "…"

@@ -93,6 +93,41 @@ def is_external_bot_author(author_name: str | None) -> bool:
     return any(marker in name for marker in known_bot_markers)
 
 
+_SHARE_HINTS = re.compile(
+    r"(?:"
+    r"https?://|"
+    r"\b(?:sharing|shared|please find|kindly find|see (?:below|attached)|here (?:is|are)|"
+    r"announcement|deadline|submit|recording|link|form|sheet|guideline)\b"
+    r")",
+    re.I,
+)
+
+
+def is_informational_share(
+    text: str,
+    *,
+    has_media: bool = False,
+    was_mentioned: bool = False,
+) -> bool:
+    """True when a human is posting useful info (not asking the bot a question)."""
+    raw = (text or "").strip()
+    if was_mentioned:
+        return False
+    if is_greeting_or_smalltalk(raw):
+        return False
+    if needs_clarification(raw, is_group=True, was_mentioned=False):
+        # Still treat long link/media posts as shares even if they contain "?"
+        if not (has_media or "http://" in raw.lower() or "https://" in raw.lower()):
+            return False
+        if len(raw) < 80:
+            return False
+    if has_media and len(raw) >= 8:
+        return True
+    if len(raw) < 40:
+        return False
+    return bool(_SHARE_HINTS.search(raw))
+
+
 def is_greeting_or_smalltalk(text: str) -> bool:
     raw = (text or "").strip()
     return bool(raw and any(p.search(raw) for p in _GREETINGS))
