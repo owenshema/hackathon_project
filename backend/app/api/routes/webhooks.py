@@ -14,12 +14,14 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.memory import MemoryAnswer, Platform
 from app.services.clarification import (
     check_and_strip_bot_mention,
+    is_addressed_to_other_bot,
     is_external_bot_author,
     is_informational_share,
     needs_clarification,
 )
 from app.core.group_profiles import is_group_admin
 from app.services.voice_recap import (
+    is_voice_recap_request,
     save_voice_answer,
     synthesize_voice_note,
 )
@@ -81,6 +83,16 @@ def _should_thank_share(conversation_id: str, author_id: str) -> bool:
 
 
 ADMIN_MENTIONS = "@250782972679 (Shema) @250789201681 (Joel)"
+
+OUR_BOT_NAMES = [
+    "JOTDS bot",
+    "JOTDS_bot",
+    "JOTDS",
+    "jotds",
+    "The Palm",
+    "Palm",
+    "joe",
+]
 
 
 def _evidence_attachments(answer: MemoryAnswer) -> list[tuple[str, str, str, str | None]]:
@@ -237,15 +249,19 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
 
                 text, was_mentioned = check_and_strip_bot_mention(
                     msg.text,
-                    bot_names=[
-                        "JOTDS bot",
-                        "JOTDS_bot",
-                        "JOTDS",
-                        "jotds",
-                        "The Palm",
-                        "Palm",
-                    ],
+                    bot_names=OUR_BOT_NAMES,
                 )
+
+                # Someone tagged another team's bot (e.g. @Zak Bot) — stay silent.
+                if is_group and is_addressed_to_other_bot(
+                    msg.text, our_bot_names=OUR_BOT_NAMES
+                ):
+                    if not was_mentioned:
+                        print(
+                            f"[WhatsApp] Skipping — addressed to another bot: "
+                            f"{(msg.text or '')[:80]!r}"
+                        )
+                        continue
 
                 meta = msg.metadata or {}
                 has_media = bool(
@@ -292,11 +308,19 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                     ):
                         continue
 
-                # In direct chats, the bot is the intended recipient, so answer any
-                # meaningful text instead of requiring a question-shaped message.
-                # Groups retain the mention/question guard to avoid interrupting chat.
-                if is_group and not needs_clarification(
-                    text, is_group=True, was_mentioned=was_mentioned
+                # In groups with several bots: only answer when we were @mentioned,
+                # or for slash commands / clear voice-delivery requests.
+                # Bare "?" questions meant for Zak Bot / others must stay silent.
+                if is_group and not was_mentioned:
+                    lower = text.lower().lstrip()
+                    allow_untagged = lower.startswith("/") or is_voice_recap_request(text)
+                    if not allow_untagged:
+                        # Still appreciate shares above; otherwise do not rag-answer.
+                        continue
+
+                # Direct chats: answer meaningful questions without requiring a tag.
+                if not is_group and not needs_clarification(
+                    text, is_group=False, was_mentioned=True
                 ):
                     continue
 

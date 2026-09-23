@@ -279,6 +279,46 @@ def _fit_score(question: str, chunk: Chunk) -> float:
     return overlap / max(len(q_tokens), 1)
 
 
+def _evidence_covers_question(question: str, cited_text: str) -> bool:
+    """Require the cited evidence to actually talk about the question's topic."""
+    q_tokens = _tokens(question)
+    if not q_tokens:
+        return False
+    cited = (cited_text or "").lower()
+    if not cited.strip():
+        return False
+    hits = sum(1 for token in q_tokens if token in cited)
+    # At least half of the content words (min 1) must appear in evidence.
+    return hits >= max(1, (len(q_tokens) + 1) // 2)
+
+
+def _answer_drifts_from_question(question: str, answer: str) -> bool:
+    """Catch obvious off-topic answers (e.g. MIT invites for a sessions question)."""
+    q = (question or "").lower()
+    a = (answer or "").lower()
+    if not q or not a:
+        return False
+    schedule_q = bool(
+        re.search(r"\b(session|sessions|this week|schedule|workshop|class|meeting)\b", q)
+    )
+    if schedule_q:
+        schedule_a = bool(
+            re.search(
+                r"\b(session|sessions|workshop|class|meeting|open hours?|wadhwani|"
+                r"tuesday|wednesday|thursday|monday|friday|this week|schedule)\b",
+                a,
+            )
+        )
+        invite_a = bool(
+            re.search(r"\b(invite|enrol|enroll|mit program|certificate)\b", a)
+        )
+        if invite_a and not schedule_a:
+            return True
+        if not schedule_a and not _evidence_covers_question(question, a):
+            return True
+    return False
+
+
 def _authority_score(chunk: Chunk) -> float:
     if _is_bot_source(chunk):
         return -5.0
@@ -1001,7 +1041,8 @@ async def answer_question(
     if not isinstance(indices, list):
         indices = []
 
-    # Only cite a chunk the model named, and only if it actually fits.
+    # Only cite a chunk the model named, and only if it actually fits the question.
+    min_fit = 0.9 if require_evidence else 0.45
     if confidence != "insufficient":
         if not indices:
             confidence = "insufficient"
@@ -1012,7 +1053,7 @@ async def answer_question(
                 if (
                     isinstance(idx, int)
                     and 0 <= idx < len(chunks)
-                    and _fit_score(question, chunks[idx]) >= 0.45
+                    and _fit_score(question, chunks[idx]) >= min_fit
                 ):
                     grounded_indices.append(idx)
             indices = grounded_indices
@@ -1054,10 +1095,14 @@ async def answer_question(
             if isinstance(idx, int) and 0 <= idx < len(chunks)
         )
         leaked = _ungrounded_datetimes(answer_text, cited)
-        if leaked:
+        off_topic = (
+            not _evidence_covers_question(question, cited)
+            or _answer_drifts_from_question(question, answer_text)
+        )
+        if leaked or off_topic:
             evidence = []
             answer_text = (
-                "I couldn't find a matching date or time in the group memory for that."
+                "I couldn't find that in the shared group chats yet."
                 if require_evidence
                 else "I couldn't find enough evidence to answer that."
             )

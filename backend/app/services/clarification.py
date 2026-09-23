@@ -217,12 +217,47 @@ def check_and_strip_bot_mention(
     for name in bot_names or []:
         if not name:
             continue
-        pattern = rf"@{re.escape(name)}\b"
+        # WhatsApp may render mentions as @Name, @~Name, or with invisible wrap chars.
+        pattern = rf"@(?:~|⁨~?)?\s*{re.escape(name)}\b"
         if re.search(pattern, cleaned, flags=re.I):
             was_mentioned = True
             cleaned = re.sub(pattern, "", cleaned, flags=re.I)
+        # Also plain name without word-boundary issues for multi-word ("JOTDS bot")
+        pattern2 = rf"@(?:~|⁨~?)?\s*{re.escape(name)}"
+        if re.search(pattern2, cleaned, flags=re.I):
+            was_mentioned = True
+            cleaned = re.sub(pattern2, "", cleaned, flags=re.I)
 
+    cleaned = re.sub(r"[\u2068\u2069\u200e\u200f]", "", cleaned)
     return cleaned.strip(), was_mentioned
+
+
+_OTHER_BOT_MENTION = re.compile(
+    r"@(?:~|⁨~?)?\s*((?:[\w.+-]+\s+){0,4}[\w.+-]*bot)\b",
+    re.I,
+)
+
+
+def is_addressed_to_other_bot(
+    text: str, our_bot_names: list[str] | None = None
+) -> bool:
+    """True when the message @tags another bot (e.g. @Zak Bot) and not us."""
+    raw = text or ""
+    our = {
+        re.sub(r"\s+", " ", n).strip().lower()
+        for n in (our_bot_names or [])
+        if n and n.strip()
+    }
+    for match in _OTHER_BOT_MENTION.finditer(raw):
+        name = re.sub(r"\s+", " ", match.group(1)).strip().lower()
+        if not name:
+            continue
+        if name in our:
+            continue
+        if any(name == o or name in o or o in name for o in our):
+            continue
+        return True
+    return False
 
 
 def strip_bot_mention(text: str, bot_names: list[str] | None = None) -> str:
