@@ -382,6 +382,40 @@ async def retrieve(
                 other_chunks.append(c)
         chunks = same_conv if profile_for(conversation_id) else same_conv + other_chunks
 
+    # Links are high-precision facts. Semantic similarity can otherwise rank a
+    # generic programme announcement above the message that actually contains
+    # the requested URL (for example, "Abaca Entrepreneurs platform"). When a
+    # user asks for a link, first favour URL-bearing messages that repeat two
+    # or more meaningful words from the request.
+    import re
+
+    asks_for_link = bool(re.search(r"\b(link|url|website|site|join)\b", query, re.I))
+    if asks_for_link:
+        stop_words = {
+            "the", "and", "for", "with", "from", "that", "this", "what",
+            "where", "which", "please", "could", "would", "can", "have",
+            "about", "platform", "website", "link", "url", "site", "join",
+        }
+        terms = [
+            term
+            for term in re.findall(r"[a-z0-9]+", query.lower())
+            if len(term) > 2 and term not in stop_words
+        ]
+        link_hits: list[tuple[int, Chunk]] = []
+        for chunk in chunks:
+            content = (chunk.content or "").lower()
+            if not re.search(r"https?://", content):
+                continue
+            matches = sum(term in content for term in terms)
+            if matches >= 2:
+                link_hits.append((matches, chunk))
+        if link_hits:
+            link_hits.sort(
+                key=lambda item: (item[0], item[1].timestamp or item[1].created_at),
+                reverse=True,
+            )
+            return [chunk for _, chunk in link_hits[:limit]]
+
     if settings.store_embeddings_as_json or not query_vec or all(v == 0.0 for v in query_vec):
         if not query_vec or all(v == 0.0 for v in query_vec):
             import re
