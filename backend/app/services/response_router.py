@@ -13,7 +13,7 @@ from app.services.voice_recap import (
     VOICE_RECAP_OFFER_WHATSAPP,
     cache_catchup_script,
     catchup_to_voice_script,
-    get_cached_catchup_script,
+    get_saved_voice_answer,
     is_voice_recap_request,
 )
 
@@ -266,7 +266,9 @@ async def handle_user_message(
     fast = platform in {Platform.WHATSAPP, Platform.TEAMS} and settings.platform_fast_mode
 
     if is_voice_recap_request(text):
-        script = get_cached_catchup_script(user_id, conversation_id)
+        # Prefer the user's last actual answer in this chat.  This lets every
+        # answer be read aloud, including after the web service has restarted.
+        script = await get_saved_voice_answer(db, user_id, conversation_id)
         if not script:
             recap = await catch_me_up(
                 db,

@@ -8,7 +8,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
+from app.db.models import VoiceAnswer
 from app.schemas.memory import CatchUpResponse
 
 VOICE_RECAP_OFFER_WHATSAPP = (
@@ -22,6 +26,8 @@ _VOICE_RECAP_PATTERNS = [
     re.compile(r"\bvoice\s*recap\b", re.I),
     re.compile(r"\bvoicenote\b", re.I),
     re.compile(r"\bvoice\s*note\b", re.I),
+    re.compile(r"\bvn\b", re.I),
+    re.compile(r"\bcan\s+(?:it|this)\s+be\s+(?:the\s+)?vn\b", re.I),
     re.compile(r"\bsend\s+(?:me\s+)?(?:a\s+)?voice\b", re.I),
     re.compile(r"\bsend\s+(?:me\s+)?(?:the\s+)?voice\s+(?:message|note)\b", re.I),
     re.compile(r"\baudio\s+recap\b", re.I),
@@ -73,6 +79,53 @@ def get_cached_catchup_script(
         _cache.pop(key, None)
         return None
     return entry.script
+
+
+async def save_voice_answer(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: str | None,
+    text: str,
+) -> None:
+    """Persist the latest answer so voice requests survive service restarts."""
+    script = recap_text_to_voice_script(text)
+    if not script.strip():
+        return
+    conversation = conversation_id or "direct"
+    db.add(
+        VoiceAnswer(
+            user_id=user_id,
+            conversation_id=conversation,
+            script=script,
+        )
+    )
+    await db.commit()
+    # Keep the memory cache too, for the fastest path in the current process.
+    cache_catchup_script(user_id, conversation_id, script)
+
+
+async def get_saved_voice_answer(
+    db: AsyncSession,
+    user_id: str,
+    conversation_id: str | None,
+) -> str | None:
+    """Get the latest answer for this person and chat, including after restart."""
+    cached = get_cached_catchup_script(user_id, conversation_id)
+    if cached:
+        return cached
+    conversation = conversation_id or "direct"
+    row = await db.scalar(
+        select(VoiceAnswer.script)
+        .where(
+            VoiceAnswer.user_id == user_id,
+            VoiceAnswer.conversation_id == conversation,
+        )
+        .order_by(VoiceAnswer.created_at.desc())
+        .limit(1)
+    )
+    if row:
+        cache_catchup_script(user_id, conversation_id, row)
+    return row
 
 
 def is_voice_recap_request(text: str) -> bool:

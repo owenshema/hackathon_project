@@ -18,8 +18,7 @@ from app.services.clarification import (
     needs_clarification,
 )
 from app.services.voice_recap import (
-    cache_catchup_script,
-    recap_text_to_voice_script,
+    save_voice_answer,
     synthesize_voice_note,
 )
 from app.services.group_recap import maybe_send_group_recaps
@@ -206,21 +205,17 @@ async def _handle_whatsapp_payload(payload: dict) -> None:
                         elif not was_mentioned:
                             continue
 
-                # Keep a short-lived spoken version of every answer actually
-                # sent to this requester in this chat. A later "read that
-                # aloud" or "send the voice message" request can therefore
-                # read the specific answer they received, rather than a
-                # generic group catch-up. Do not replace it with the
-                # acknowledgement created for a voice request itself.
-                if (
-                    isinstance(result, MemoryAnswer)
-                    and not result.deliver_voice_recap
-                    and formatted.strip()
+                # Keep every answer actually sent to this requester in this
+                # chat. A later voice request reads that specific answer,
+                # rather than falling back to a generic catch-up.
+                if formatted.strip() and not (
+                    isinstance(result, MemoryAnswer) and result.deliver_voice_recap
                 ):
-                    cache_catchup_script(
+                    await save_voice_answer(
+                        db,
                         msg.author_id,
                         msg.conversation_id if is_group else None,
-                        recap_text_to_voice_script(formatted),
+                        formatted,
                     )
 
                 try:

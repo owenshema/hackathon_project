@@ -168,3 +168,19 @@ class UserActivity(Base):
     user_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     platform: Mapped[str] = mapped_column(String(32), default="web")
+
+
+class VoiceAnswer(Base):
+    """Latest bot answer available for a user to request as a voice note."""
+
+    __tablename__ = "voice_answers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUIDType, primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(255), index=True)
+    script: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
